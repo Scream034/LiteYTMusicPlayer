@@ -353,7 +353,6 @@ internal sealed class PlaylistMutationController(HttpClient http)
     public async Task<bool> UploadPlaylistThumbnailAsync(
         string playlistId,
         byte[] imageData,
-        string mimeType = "image/jpeg",
         CancellationToken ct = default)
     {
         if (imageData.Length == 0)
@@ -375,7 +374,7 @@ internal sealed class PlaylistMutationController(HttpClient http)
             initiateRequest.Headers.Add("X-Goog-Upload-Header-Content-Length", imageData.Length.ToString());
 
             // Content-Type для пустого тела
-            initiateRequest.Content = new ByteArrayContent(Array.Empty<byte>());
+            initiateRequest.Content = new ByteArrayContent([]);
             initiateRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-www-form-urlencoded")
             {
                 CharSet = "UTF-8"

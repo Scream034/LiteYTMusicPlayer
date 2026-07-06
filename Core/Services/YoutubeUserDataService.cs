@@ -124,14 +124,10 @@ public partial class YoutubeUserDataService
 
     #region Операции с плейлистами
 
-    /// <summary>
-    /// Создает новый облачный плейлист на аккаунте YouTube Music.
-    /// </summary>
     /// <param name="title">Название плейлиста.</param>
-    /// <param name="description">Описание (устарело в мобильных мутациях API, поддерживается как fallback).</param>
     /// <returns>YouTube-идентификатор созданного плейлиста.</returns>
     /// <exception cref="InvalidOperationException">Выбрасывается, если YouTube API вернул пустой результат.</exception>
-    public async Task<string> CreatePlaylistAsync(string title, string description = "")
+    public async Task<string> CreatePlaylistAsync(string title)
     {
         return await Provider.CreatePlaylistAsync(title)
             ?? throw new InvalidOperationException("YouTube API returned null playlist ID.");

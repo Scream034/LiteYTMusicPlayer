@@ -229,7 +229,10 @@ public sealed class UIHangWatchdog : IDisposable
         ThreadPool.GetAvailableThreads(out int availWorker, out int availIo);
         int activeWorkers = maxWorker - availWorker;
 
-        Log.Warn($"[Watchdog] ThreadPool Metrics — Active Workers: {activeWorkers}, Available: {availWorker}/{maxWorker}, Min: {minWorker}, IO Available: {availIo}/{maxIo}");
+        Log.Warn(
+            $"[Watchdog] ThreadPool Metrics — Active Workers: {activeWorkers}, " +
+            $"Available: {availWorker}/{maxWorker}, Min: {minWorker}/{minIo}, " +
+            $"IO Available: {availIo}/{maxIo}");
     }
 
     /// <summary>

@@ -99,7 +99,7 @@ public sealed class OpusDecoder : IAudioDecoder
         try
         {
             Span<short> shortSpan = _shortBuffer.AsSpan();
-            int samples = _decoder.Decode(ReadOnlySpan<byte>.Empty, shortSpan, MaxFrameSize);
+            int samples = _decoder.Decode([], shortSpan, MaxFrameSize);
             ConvertShortToFloat(shortSpan[..(samples * Channels)], outputBuffer);
             return samples;
         }

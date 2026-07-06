@@ -47,7 +47,11 @@ public sealed class DownloadService
 
     /// <summary>
     /// Запускает процесс загрузки трека.
-    /// <para>Если трек полностью кэширован, выполняется мгновенный фоновый экспорт на диск без использования сетевых лимитов.</para>
+    /// <list type="bullet">
+    ///   <item>Если трек полностью закэширован — мгновенный экспорт без сети.</item>
+    ///   <item>Если трек частично закэширован — докачивает только недостающие gaps.</item>
+    ///   <item>Если кэша нет — скачивает целиком через кэш-механизм и экспортирует.</item>
+    /// </list>
     /// </summary>
     /// <param name="track">Объект информации о треке.</param>
     public void StartDownload(TrackInfo track)
@@ -58,69 +62,74 @@ public sealed class DownloadService
                 return;
         }
 
-        // Интеграция быстрого пути: Проверяем, есть ли трек в локальном дисковом кэше
-        var cache = AudioSourceFactory.GlobalCache;
-        if (cache != null && cache.IsTrackFullyCached(track.Id))
+        var cache = Audio.AudioSourceFactory.GlobalCache;
+        if (cache == null) return;
+
+        // Path 1: Already fully cached → instant export (0 network bytes)
+        if (cache.IsTrackFullyCached(track.Id))
         {
-            Log.Info($"[DownloadService] Track '{track.Title}' ({track.Id}) is fully cached. Promoting instantly, bypassing net queue.");
-            
             lock (_lock)
             {
                 _activeTasks[track.Id] = new DownloadTask { Progress = 0f };
             }
 
-            Task.Run(async () =>
-            {
-                try
-                {
-                    OnProgress?.Invoke(track.Id, 0f);
-
-                    // Экспортируем готовый файл кэша в Downloads
-                    bool success = await cache.ExportTrackToDownloadsAsync(
-                        track.Id,
-                        async id => await _library.GetTrackAsync(id).ConfigureAwait(false),
-                        async t => await _library.AddOrUpdateTrackAsync(t).ConfigureAwait(false),
-                        CancellationToken.None).ConfigureAwait(false);
-
-                    if (success)
-                    {
-                        var updatedTrack = await _library.GetTrackAsync(track.Id).ConfigureAwait(false);
-                        if (updatedTrack != null)
-                        {
-                            track.IsDownloaded = true;
-                            track.LocalPath = updatedTrack.LocalPath;
-                            OnProgress?.Invoke(track.Id, 1.0f); // 100%
-                            OnCompleted?.Invoke(track.Id, true, track.LocalPath);
-                            return;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Warn($"[DownloadService] Instant promotion failed for {track.Id}: {ex.Message}. Falling back to queue.");
-                }
-                finally
-                {
-                    lock (_lock)
-                    {
-                        _activeTasks.Remove(track.Id);
-                    }
-                }
-
-                // Если мгновенный экспорт сорвался (например, I/O ошибка), отправляем в обычную очередь докачки
-                EnqueueNormalDownload(track);
-            });
-
+            _ = RunInstantExportAsync(track, cache);
             return;
         }
 
-        EnqueueNormalDownload(track);
+        // Path 2: Partial or no cache → gap-fill + export
+        EnqueueGapFillDownload(track);
     }
 
     /// <summary>
-    /// Помещает задачу загрузки в стандартную очередь с ограничением параллелизма.
+    /// Мгновенный экспорт полностью закэшированного трека в Downloads.
     /// </summary>
-    private void EnqueueNormalDownload(TrackInfo track)
+    private async Task RunInstantExportAsync(TrackInfo track, Audio.Cache.AudioCacheManager cache)
+    {
+        try
+        {
+            OnProgress?.Invoke(track.Id, 0f);
+
+            bool success = await cache.ExportTrackToDownloadsAsync(
+                track.Id,
+                async id => await _library.GetTrackAsync(id).ConfigureAwait(false),
+                async t => await _library.AddOrUpdateTrackAsync(t).ConfigureAwait(false),
+                CancellationToken.None).ConfigureAwait(false);
+
+            if (success)
+            {
+                var updatedTrack = await _library.GetTrackAsync(track.Id).ConfigureAwait(false);
+                if (updatedTrack != null)
+                {
+                    track.IsDownloaded = true;
+                    track.LocalPath = updatedTrack.LocalPath;
+                    OnProgress?.Invoke(track.Id, 1.0f);
+                    OnCompleted?.Invoke(track.Id, true, track.LocalPath);
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[DownloadService] Instant export failed for {track.Id}: {ex.Message}. Falling back to gap-fill.");
+        }
+        finally
+        {
+            lock (_lock)
+            {
+                _activeTasks.Remove(track.Id);
+            }
+        }
+
+        // Если мгновенный экспорт сорвался — fallback на gap-fill
+        EnqueueGapFillDownload(track);
+    }
+
+    /// <summary>
+    /// Помещает задачу загрузки в очередь с ограничением параллелизма.
+    /// Использует gap-fill: скачивает только недостающие ranges через HTTP range requests.
+    /// </summary>
+    private void EnqueueGapFillDownload(TrackInfo track)
     {
         lock (_lock)
         {
@@ -128,65 +137,110 @@ public sealed class DownloadService
                 return;
 
             var cts = new CancellationTokenSource();
-            _activeTasks[track.Id] = new DownloadTask { CancellationSource = cts };
+            _activeTasks[track.Id] = new DownloadTask { Progress = 0f, CancellationSource = cts };
         }
 
-        Task.Run(async () =>
+        _ = RunGapFillDownloadAsync(track);
+    }
+
+    /// <summary>
+    /// Выполняет gap-fill загрузку: resolve URL → скачать gaps → экспорт в Downloads.
+    /// </summary>
+    private async Task RunGapFillDownloadAsync(TrackInfo track)
+    {
+        await _downloadSemaphore.WaitAsync().ConfigureAwait(false);
+
+        try
         {
-            await _downloadSemaphore.WaitAsync().ConfigureAwait(false);
-
-            try
+            CancellationToken ct;
+            lock (_lock)
             {
-                var progress = new Progress<float>(p =>
-                {
-                    lock (_lock)
-                    {
-                        if (_activeTasks.TryGetValue(track.Id, out var task))
-                            task.Progress = p;
-                    }
-                    OnProgress?.Invoke(track.Id, p);
-                });
+                if (!_activeTasks.TryGetValue(track.Id, out var task))
+                    return;
+                ct = task.CancellationSource.Token;
+            }
 
-                CancellationToken ct;
+            // Step 1: Resolve stream URL (uses session cache → 0 API calls for recently played tracks)
+            var descriptor = await _youtube.RefreshStreamAsync(track, false, ct).ConfigureAwait(false);
+            if (descriptor == null || !descriptor.Value.HasLiveUrl)
+            {
+                Log.Warn($"[DownloadService] No live URL for {track.Id}");
+                OnCompleted?.Invoke(track.Id, false, null);
+                return;
+            }
+
+            var cache = Audio.AudioSourceFactory.GlobalCache;
+            if (cache == null)
+            {
+                OnCompleted?.Invoke(track.Id, false, null);
+                return;
+            }
+
+            // Step 2: Gap-fill download (only missing ranges)
+            var progress = new Progress<float>(p =>
+            {
                 lock (_lock)
                 {
-                    if (!_activeTasks.TryGetValue(track.Id, out var task))
-                        return;
-                    ct = task.CancellationSource.Token;
+                    if (_activeTasks.TryGetValue(track.Id, out var task))
+                        task.Progress = p;
                 }
+                OnProgress?.Invoke(track.Id, p);
+            });
 
-                string? path = await _youtube.DownloadTrackAsync(track, progress, ct).ConfigureAwait(false);
+            bool cached = await Audio.Cache.CacheDownloadHelper.EnsureFullyCachedAsync(
+                descriptor.Value,
+                Audio.Http.SharedHttpClient.Instance,
+                cache,
+                progress,
+                ct).ConfigureAwait(false);
 
-                if (!string.IsNullOrEmpty(path))
+            if (!cached)
+            {
+                Log.Warn($"[DownloadService] Gap-fill incomplete for {track.Id}");
+                OnCompleted?.Invoke(track.Id, false, null);
+                return;
+            }
+
+            ct.ThrowIfCancellationRequested();
+
+            // Step 3: Export completed cache to Downloads
+            bool exported = await cache.ExportTrackToDownloadsAsync(
+                track.Id,
+                async id => await _library.GetTrackAsync(id).ConfigureAwait(false),
+                async t => await _library.AddOrUpdateTrackAsync(t).ConfigureAwait(false),
+                ct).ConfigureAwait(false);
+
+            if (exported)
+            {
+                var updatedTrack = await _library.GetTrackAsync(track.Id).ConfigureAwait(false);
+                if (updatedTrack != null)
                 {
                     track.IsDownloaded = true;
-                    track.LocalPath = path;
-                    await _library.AddOrUpdateTrackAsync(track).ConfigureAwait(false);
-                    OnCompleted?.Invoke(track.Id, true, path);
-                }
-                else
-                {
-                    OnCompleted?.Invoke(track.Id, false, null);
+                    track.LocalPath = updatedTrack.LocalPath;
+                    OnCompleted?.Invoke(track.Id, true, track.LocalPath);
+                    return;
                 }
             }
-            catch (OperationCanceledException)
+
+            OnCompleted?.Invoke(track.Id, false, null);
+        }
+        catch (OperationCanceledException)
+        {
+            OnCompleted?.Invoke(track.Id, false, null);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[DownloadService] Gap-fill download failed for {track.Id}: {ex.Message}");
+            OnCompleted?.Invoke(track.Id, false, null);
+        }
+        finally
+        {
+            lock (_lock)
             {
-                OnCompleted?.Invoke(track.Id, false, null);
+                _activeTasks.Remove(track.Id);
             }
-            catch (Exception ex)
-            {
-                Log.Error($"[DownloadService] Failed to download {track.Id}: {ex.Message}");
-                OnCompleted?.Invoke(track.Id, false, null);
-            }
-            finally
-            {
-                lock (_lock)
-                {
-                    _activeTasks.Remove(track.Id);
-                }
-                _downloadSemaphore.Release();
-            }
-        });
+            _downloadSemaphore.Release();
+        }
     }
 
     public void CancelDownload(string trackId)

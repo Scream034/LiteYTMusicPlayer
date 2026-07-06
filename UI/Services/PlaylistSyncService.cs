@@ -671,7 +671,6 @@ public sealed class PlaylistSyncService
         CancellationToken ct)
     {
         byte[] imageData;
-        string mimeType = "image/jpeg";
 
         if (thumbnailUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
         {
@@ -681,9 +680,6 @@ public sealed class PlaylistSyncService
             var response = await httpClient.GetAsync(thumbnailUrl, ct);
             response.EnsureSuccessStatusCode();
             imageData = await response.Content.ReadAsByteArrayAsync(ct);
-
-            if (response.Content.Headers.ContentType?.MediaType is { } contentType)
-                mimeType = contentType;
         }
         else if (thumbnailUrl.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
         {
@@ -697,12 +693,10 @@ public sealed class PlaylistSyncService
             }
 
             imageData = await File.ReadAllBytesAsync(localPath, ct);
-            mimeType = GetMimeTypeFromExtension(Path.GetExtension(localPath));
         }
         else if (Path.IsPathRooted(thumbnailUrl) && File.Exists(thumbnailUrl))
         {
             imageData = await File.ReadAllBytesAsync(thumbnailUrl, ct);
-            mimeType = GetMimeTypeFromExtension(Path.GetExtension(thumbnailUrl));
         }
         else
         {
@@ -723,21 +717,8 @@ public sealed class PlaylistSyncService
         }
 
         return await _youtube.UploadPlaylistThumbnailAsync(
-            youtubePlaylistId, imageData, mimeType);
+            youtubePlaylistId, imageData);
     }
-
-    /// <summary>
-    /// Определяет MIME-тип по расширению файла изображения.
-    /// </summary>
-    private static string GetMimeTypeFromExtension(string extension) => extension.ToLowerInvariant() switch
-    {
-        ".jpg" or ".jpeg" => "image/jpeg",
-        ".png" => "image/png",
-        ".webp" => "image/webp",
-        ".gif" => "image/gif",
-        ".bmp" => "image/bmp",
-        _ => "image/jpeg"
-    };
 
     /// <summary>
     /// Возвращает кэшированный снимок или делает свежий запрос.

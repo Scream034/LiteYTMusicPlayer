@@ -206,7 +206,7 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
 
         // Bot detection tracking ПЕРЕД LoginRequired
         // Обеспечивает инкремент _consecutiveFailures для LOGIN_REQUIRED + "bot"
-        TrackBotDetection(playerResponse, videoId.Value);
+        TrackBotDetection(playerResponse);
 
         if (playerResponse.IsLoginRequired)
         {
@@ -284,7 +284,7 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
                error.Contains("confirm", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void TrackBotDetection(PlayerResponse response, string videoId)
+    private static void TrackBotDetection(PlayerResponse response)
     {
         if (IsBotDetectionResponse(response))
         {

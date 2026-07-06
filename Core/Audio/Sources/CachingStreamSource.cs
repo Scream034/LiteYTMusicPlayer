@@ -752,14 +752,14 @@ public sealed partial class CachingStreamSource : IAudioSource
             $"[CachingSource] Startup prefetch: {prefetchLength / 1024}KB " +
             $"at offset {prefetchStart} (initial={alreadyFetchedBytes / 1024}KB)");
 
-        _ = SafeStartupPrefetchAsync(prefetchStart, prefetchLength, _lifetimeCts!.Token);
+        _ = SafeStartupPrefetchAsync(prefetchStart, prefetchLength);
     }
 
     /// <summary>
     /// Best-effort фоновый prefetch для заполнения warmup-буфера.
     /// Ошибки не прерывают инициализацию — preload loop подхватит недокачанное.
     /// </summary>
-    private async Task SafeStartupPrefetchAsync(long start, int length, CancellationToken ct)
+    private async Task SafeStartupPrefetchAsync(long start, int length)
     {
         try
         {

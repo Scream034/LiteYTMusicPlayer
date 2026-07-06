@@ -408,7 +408,7 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
         if (string.IsNullOrEmpty(movingId)) return;
 
         int masterOld = _masterIds.IndexOf(movingId);
-        int masterNew = GetMasterIndexForVisualTarget(newIndex, oldIndex);
+        int masterNew = GetMasterIndexForVisualTarget(newIndex);
 
         if (masterOld >= 0 && masterNew >= 0 && masterOld != masterNew)
         {
@@ -427,7 +427,7 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
         if (string.IsNullOrEmpty(movingId)) return;
 
         int masterOld = _masterIds.IndexOf(movingId);
-        int masterNew = GetMasterIndexForVisualTarget(newIndex, oldIndex);
+        int masterNew = GetMasterIndexForVisualTarget(newIndex);
 
         if (masterOld >= 0 && masterNew >= 0 && masterOld != masterNew)
         {
@@ -464,7 +464,7 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
             && newIndex >= 0 && newIndex < Items.Count;
     }
 
-    private int GetMasterIndexForVisualTarget(int visualTarget, int visualSource)
+    private int GetMasterIndexForVisualTarget(int visualTarget)
     {
         if (visualTarget >= Items.Count) return _masterIds.Count - 1;
         var targetId = GetVmId(Items[visualTarget]);

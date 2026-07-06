@@ -1419,47 +1419,49 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
 
     private async Task HandleMissingFormatsNotificationAsync(Exception? exception, string? errorMessage)
     {
-        string titleKey = "Error_StreamUnavailable_Title";
-        string messageKey = "Error_Stream_Generic";
-        string? recommendationKey = "Recommendation_ContactDev";
+        const string titleKey = "Error_StreamUnavailable_Title";
 
-        if (exception is YoutubeNetworkException netEx)
+        string messageKey = exception switch
         {
-            messageKey = netEx.GetLocalizationKey();
-            recommendationKey = netEx.GetRecommendationKey();
-        }
-        else if (exception is LoginRequiredException lre)
+            YoutubeNetworkException netEx => netEx.GetLocalizationKey(),
+            LoginRequiredException lre => lre.GetLocalizationKey(),
+            BotDetectionException => "Error_Login_BotDetection",
+            _ => "Error_Stream_Generic"
+        };
+
+        string? recommendationKey = exception switch
         {
-            messageKey = lre.GetLocalizationKey();
-            recommendationKey = lre.Reason switch
+            YoutubeNetworkException netEx => netEx.GetRecommendationKey(),
+            LoginRequiredException lre => lre.Reason switch
             {
                 LoginRequiredReason.AgeRestricted => "Recommendation_Login_AgeRestricted",
                 LoginRequiredReason.Private => "Recommendation_Private",
                 LoginRequiredReason.MembersOnly => "Recommendation_MembersOnly",
                 LoginRequiredReason.BotDetection => "Recommendation_BotDetection",
                 _ => "Recommendation_Login"
-            };
-        }
-        else if (exception is BotDetectionException)
+            },
+            BotDetectionException => "Recommendation_BotDetection",
+            _ => null
+        };
+
+        if (recommendationKey == null)
         {
-            messageKey = "Error_Login_BotDetection";
-            recommendationKey = "Recommendation_BotDetection";
-        }
-        else if (errorMessage != null &&
-                 (errorMessage.Contains("AgeRestricted", StringComparison.OrdinalIgnoreCase) ||
-                  errorMessage.Contains("Age restricted", StringComparison.OrdinalIgnoreCase)))
-        {
-            messageKey = "Error_Login_AgeRestricted";
-            recommendationKey = "Recommendation_Login_AgeRestricted";
-        }
-        else if (!_youtube.AuthService.IsAuthenticated)
-        {
-            messageKey = "Error_Login_Required";
-            recommendationKey = "Recommendation_Login";
-        }
-        else
-        {
-            recommendationKey = "Recommendation_DpiBlocked";
+            if (errorMessage != null &&
+                (errorMessage.Contains("AgeRestricted", StringComparison.OrdinalIgnoreCase) ||
+                 errorMessage.Contains("Age restricted", StringComparison.OrdinalIgnoreCase)))
+            {
+                messageKey = "Error_Login_AgeRestricted";
+                recommendationKey = "Recommendation_Login_AgeRestricted";
+            }
+            else if (!_youtube.AuthService.IsAuthenticated)
+            {
+                messageKey = "Error_Login_Required";
+                recommendationKey = "Recommendation_Login";
+            }
+            else
+            {
+                recommendationKey = "Recommendation_DpiBlocked";
+            }
         }
 
         try

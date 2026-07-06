@@ -189,7 +189,7 @@ public sealed partial class CachingStreamSource
 
                     if (shouldCompletionFill)
                     {
-                        await TryCompletionFillAsync(token, adaptiveMaxDownloads - pending, ct)
+                        await TryCompletionFillAsync(token, adaptiveMaxDownloads - pending)
                             .ConfigureAwait(false);
                     }
                 }
@@ -224,11 +224,9 @@ public sealed partial class CachingStreamSource
     /// </summary>
     /// <param name="downloadToken">Токен текущей эпохи загрузки.</param>
     /// <param name="maxRequests">Максимальное количество одновременных запросов.</param>
-    /// <param name="ct">Внешний токен отмены.</param>
     private async Task TryCompletionFillAsync(
         CancellationToken downloadToken,
-        int maxRequests,
-        CancellationToken ct)
+        int maxRequests)
     {
         if (_cacheEntry == null || _cacheEntry.IsComplete || maxRequests <= 0)
             return;

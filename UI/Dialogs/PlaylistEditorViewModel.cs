@@ -335,7 +335,6 @@ public sealed partial class PlaylistEditorViewModel : ViewModelBase
                 .GetRequiredService<Lazy<YoutubeProvider>>(AppEntry.Services);
 
             byte[] imageData;
-            string mimeType = "image/jpeg";
 
             if (IsHttpUrl(ThumbnailUrl))
             {
@@ -345,9 +344,6 @@ public sealed partial class PlaylistEditorViewModel : ViewModelBase
                 var response = await httpClient.GetAsync(ThumbnailUrl);
                 response.EnsureSuccessStatusCode();
                 imageData = await response.Content.ReadAsByteArrayAsync();
-
-                if (response.Content.Headers.ContentType?.MediaType is { } contentType)
-                    mimeType = contentType;
             }
             else if (ThumbnailUrl.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
             {
@@ -361,12 +357,10 @@ public sealed partial class PlaylistEditorViewModel : ViewModelBase
                 }
 
                 imageData = await File.ReadAllBytesAsync(localPath);
-                mimeType = GetMimeTypeFromExtension(Path.GetExtension(localPath));
             }
             else if (Path.IsPathRooted(ThumbnailUrl) && File.Exists(ThumbnailUrl))
             {
                 imageData = await File.ReadAllBytesAsync(ThumbnailUrl);
-                mimeType = GetMimeTypeFromExtension(Path.GetExtension(ThumbnailUrl));
             }
             else
             {
@@ -387,7 +381,7 @@ public sealed partial class PlaylistEditorViewModel : ViewModelBase
             }
 
             var success = await youtube.Value.UploadPlaylistThumbnailAsync(
-                _originalPlaylist.YoutubeId, imageData, mimeType);
+                _originalPlaylist.YoutubeId, imageData);
 
             if (success)
             {
@@ -425,19 +419,6 @@ public sealed partial class PlaylistEditorViewModel : ViewModelBase
         }
         catch { /* ignore */ }
     }
-
-    /// <summary>
-    /// Определяет MIME-тип по расширению файла.
-    /// </summary>
-    private static string GetMimeTypeFromExtension(string extension) => extension.ToLowerInvariant() switch
-    {
-        ".jpg" or ".jpeg" => "image/jpeg",
-        ".png" => "image/png",
-        ".webp" => "image/webp",
-        ".gif" => "image/gif",
-        ".bmp" => "image/bmp",
-        _ => "image/jpeg"
-    };
 
     #endregion
 

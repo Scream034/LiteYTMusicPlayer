@@ -577,35 +577,6 @@ public sealed class PlayerControlService : IDisposable
         }
     }
 
-    /// <summary>
-    /// Показывает toast-уведомление о сложной расшифровке n-токена.
-    /// При авто-пропуске используется отдельное сообщение.
-    /// </summary>
-    private static async Task ShowNTokenWarningAsync(NotificationService notificationService, AudioEngine.NTokenWarningInfo warning)
-    {
-        try
-        {
-            var track = warning.Track;
-            string trackDisplay = track?.Title ?? track?.Id ?? "Unknown";
-            string? trackTitle = track?.Title ?? track?.Id;
-            string messageKey = warning.WasSkipped
-                ? "Notification_NToken_Skipped"
-                : "Notification_NToken_Message";
-
-            await notificationService.ShowToastAsync(
-                titleKey: "Notification_NToken_Title",
-                messageKey: messageKey,
-                severity: NotificationSeverity.Warning,
-                messageArgs: [trackDisplay],
-                trackId: track?.Id,
-                trackTitle: trackTitle);
-        }
-        catch (Exception ex)
-        {
-            Log.Warn($"[PlayerControl] Failed to show n-token warning: {ex.Message}");
-        }
-    }
-
     #endregion
 
     #region Sync

@@ -504,8 +504,7 @@ public partial class YoutubeProvider : IDisposable
     /// </summary>
     public async Task<bool> UploadPlaylistThumbnailAsync(
         string playlistId,
-        byte[] imageData,
-        string mimeType = "image/jpeg")
+        byte[] imageData)
     {
         if (string.IsNullOrWhiteSpace(playlistId))
             throw new ArgumentException("Playlist ID cannot be empty.", nameof(playlistId));
@@ -518,7 +517,7 @@ public partial class YoutubeProvider : IDisposable
         try
         {
             var result = await _youtube.Mutations.UploadPlaylistThumbnailAsync(
-                playlistId, imageData, mimeType);
+                playlistId, imageData);
 
             if (result)
             {
@@ -1712,37 +1711,6 @@ public partial class YoutubeProvider : IDisposable
 
             await _youtube.Videos.Streams.DownloadAsync(stream, filePath, progress: prog, cancellationToken: ct);
             Log.Info($"[YouTube] Downloaded: {fileName}");
-
-            var cacheManager = AudioSourceFactory.GlobalCache;
-            if (cacheManager != null)
-            {
-                var format = AudioSourceFactory.DetectFormat(stream.Url);
-                if (format == AudioFormat.Unknown)
-                {
-                    format = stream.Container.Name switch
-                    {
-                        "webm" => AudioFormat.WebM,
-                        "mp4" or "m4a" => AudioFormat.Mp4,
-                        "ogg" => AudioFormat.Ogg,
-                        _ => AudioFormat.Unknown
-                    };
-                }
-
-                if (format != AudioFormat.Unknown)
-                {
-                    int bitrate = (int)Math.Round(stream.Bitrate.KiloBitsPerSecond);
-                    string capturedFilePath = filePath;
-                    string capturedTrackId = track.Id;
-
-                    _ = Task.Run(async () =>
-                    {
-                        await cacheManager.ResumeCacheFromDownloadedFileAsync(
-                            capturedTrackId, capturedFilePath, format, bitrate,
-                            startChunkHint: 0,
-                            ct: CancellationToken.None);
-                    });
-                }
-            }
 
             return filePath;
         }

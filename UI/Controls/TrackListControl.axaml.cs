@@ -545,7 +545,7 @@ public partial class TrackListControl : UserControl
             sender is Control ctl && ctl.DataContext is TrackItemViewModel vm)
         {
             Log.Debug($"[PointerReleased] Right-click detected on item: {vm.Title}");
-            ShowSharedFlyout(ctl, vm, showAtPointer: true);
+            ShowSharedFlyout(ctl, true);
             e.Handled = true;
             return;
         }
@@ -775,8 +775,8 @@ public partial class TrackListControl : UserControl
 
     private void OnMoreButtonClicked(object? sender, RoutedEventArgs e)
     {
-        if (sender is not Control c || c.DataContext is not TrackItemViewModel vm) return;
-        ShowSharedFlyout(c, vm, showAtPointer: false);
+        if (sender is not Control c || c.DataContext is not TrackItemViewModel) return;
+        ShowSharedFlyout(c, false);
     }
 
     /// <summary>
@@ -784,7 +784,7 @@ public partial class TrackListControl : UserControl
     /// showAtPointer=true — при ПКМ, меню под курсором.
     /// showAtPointer=false — при клике на "три точки", меню привязано к кнопке.
     /// </summary>
-    private void ShowSharedFlyout(Control target, TrackItemViewModel vm, bool showAtPointer)
+    private void ShowSharedFlyout(Control target, bool showAtPointer)
     {
         if (this.Resources.TryGetValue("SharedTrackMenuFlyout", out var res) && res is MenuFlyout f)
             f.ShowAt(target, showAtPointer);

@@ -80,7 +80,7 @@ public sealed class YoutubeNetworkException : YoutubeExplodeException
     /// <param name="errorType">Классификация сетевой ошибки.</param>
     /// <param name="innerException">Исходное исключение, вызвавшее сбой.</param>
     public YoutubeNetworkException(string message, NetworkErrorType errorType, Exception? innerException = null)
-        : base(message)
+        : base(message, innerException)
     {
         ErrorType = errorType;
     }

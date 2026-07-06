@@ -191,7 +191,6 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
     /// <summary>
     /// Инициирует запуск воспроизведения.
     /// </summary>
-    // BREAKING: Принимает ResolvedStreamDescriptor вместо string url + string? trackId + int bitrateHint
     private void Play(
         ResolvedStreamDescriptor descriptor,
         TimeSpan? seekPosition = null,
@@ -213,7 +212,6 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
     /// <summary>
     /// Запускает воспроизведение и ожидает Playing.
     /// </summary>
-    // BREAKING: Принимает ResolvedStreamDescriptor вместо string url + string? trackId + int bitrateHint
     public Task PlayAsync(
         ResolvedStreamDescriptor descriptor,
         CancellationToken ct = default,

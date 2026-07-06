@@ -228,7 +228,7 @@ public sealed partial class AudioEngine
 
     #region Navigation
 
-    private bool TryMoveNext(bool userInitiated, bool startPlaying = true)
+    private bool TryMoveNext(bool userInitiated)
     {
         _queueMutatedByNavigation = false;
         if (_queue.Count == 0) return false;

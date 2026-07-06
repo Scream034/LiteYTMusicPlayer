@@ -33,7 +33,6 @@ public interface IAudioCommand
 /// Токен отмены пользовательской сессии воспроизведения.
 /// Позволяет мгновенно прервать запуск устаревшего трека, если пользователь уже переключился.
 /// </param>
-// BREAKING: PlayCommand больше не содержит отдельные Url/TrackId/BitrateHint — все данные в Descriptor
 public sealed record PlayCommand(
     ResolvedStreamDescriptor Descriptor,
     int SessionId,

@@ -24,3 +24,8 @@ global using LMP.UI.Models;
 global using LMP.UI.Services;
 global using LMP.UI.Helpers;
 global using LMP.UI.ViewModels;
+
+using System.Runtime.CompilerServices;
+
+[assembly: InternalsVisibleTo("LMP.Core")]
+[assembly: InternalsVisibleTo("LMP.Tests")]

@@ -15,6 +15,21 @@ dotnet_diagnostic.CS8625.severity = none
 dotnet_diagnostic.CS0420.severity = none
 
 [*.cs]
+# Неиспользуемые параметры
+dotnet_diagnostic.IDE0060.severity = warning
+
+# Неиспользуемые private поля/методы/свойства
+dotnet_diagnostic.IDE0051.severity = warning
+
+# Private member assigned but its value is never read
+dotnet_diagnostic.IDE0052.severity = warning
+
+# Ненужные присваивания
+dotnet_diagnostic.IDE0059.severity = warning
+
+# Поле можно сделать readonly
+dotnet_diagnostic.IDE0044.severity = suggestion
+
 # Отключаем тяжёлые правила в Debug
 dotnet_diagnostic.CA1031.severity = none
 dotnet_diagnostic.CA1062.severity = none

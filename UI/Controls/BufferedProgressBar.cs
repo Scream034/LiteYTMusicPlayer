@@ -190,30 +190,29 @@ public sealed class BufferedProgressBar : Control
 
         for (int i = 0; i < targets.Count; i++)
         {
-            var target = targets[i];
-            var current = _smoothRanges[i];
+            var (TStart, TEnd) = targets[i];
+            var (SStart, SEnd) = _smoothRanges[i];
 
-            double newStart = current.Start;
-            double newEnd = current.End;
-
-            if (Math.Abs(target.Start - current.Start) > ProgressConstants.SnapThreshold)
+            double newStart;
+            if (Math.Abs(TStart - SStart) > ProgressConstants.SnapThreshold)
             {
-                newStart = current.Start + (target.Start - current.Start) * ProgressConstants.LerpFactor;
+                newStart = SStart + (TStart - SStart) * ProgressConstants.LerpFactor;
                 needsMoreInterpolation = true;
             }
             else
             {
-                newStart = target.Start;
+                newStart = TStart;
             }
 
-            if (Math.Abs(target.End - current.End) > ProgressConstants.SnapThreshold)
+            double newEnd;
+            if (Math.Abs(TEnd - SEnd) > ProgressConstants.SnapThreshold)
             {
-                newEnd = current.End + (target.End - current.End) * ProgressConstants.LerpFactor;
+                newEnd = SEnd + (TEnd - SEnd) * ProgressConstants.LerpFactor;
                 needsMoreInterpolation = true;
             }
             else
             {
-                newEnd = target.End;
+                newEnd = TEnd;
             }
 
             _smoothRanges[i] = (newStart, newEnd);

@@ -46,13 +46,6 @@ public sealed class AudioPipeline : IAsyncDisposable
     private const double LufsOffset = -0.691;
     private const double AbsoluteGateThresholdLufs = -70.0;
     private const double GatingBlockSeconds = 0.4;
-    /// <summary>
-    /// Коэффициент прореживания фреймов при isolated pre-scan.
-    /// Декодируется каждый N-й фрейм, остальные читаются и отбрасываются.
-    /// EBU R128 power нормализуется на <c>blockFrameCount</c> — decimation не ломает математику.
-    /// Точность: ±1–2 dB относительно full-decode (приемлемо для pre-scan нормализации).
-    /// </summary>
-    private const int ScanDecimationFactor = 5;
 
     #endregion
 

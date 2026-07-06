@@ -324,7 +324,7 @@ public sealed partial class AudioPlayer
                 if (wasPlaying && _state != PlayerState.Paused)
                 {
                     var (seekThreshold, sourceAheadMs, warmupTimeout) =
-                        ComputeSeekWarmupParams(pipeline, currentTargetMs);
+                        ComputeSeekWarmupParams(pipeline);
 
                     bool warmupReady = seekThreshold <= 0;
 
@@ -615,7 +615,7 @@ public sealed partial class AudioPlayer
     /// Вычисляет adaptive параметры прогрева для seek.
     /// </summary>
     private static (int seekThreshold, int sourceAheadMs, int warmupTimeout) ComputeSeekWarmupParams(
-        AudioPipeline pipeline, long targetMs)
+        AudioPipeline pipeline)
     {
         var plan = ComputePlaybackWarmupPlan(pipeline, isSeek: true);
         return (plan.PcmThresholdSamples, plan.SourceAheadMs, plan.WarmupTimeoutMs);
