@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using LMP.Core.Audio.Backends;
 using LMP.Core.Audio.Decoders;
 using LMP.Core.Audio.Helpers;
 using LMP.Core.Audio.Interfaces;
@@ -19,7 +18,6 @@ public sealed class AudioPipeline : IAsyncDisposable
 {
     #region Constants
 
-    private const int ShortTrackIdLength = 8;
     private const int BufferFullDelayMs = 5;
     private const int DrainMinDelayMs = 50;
     private const int DrainMaxDelayMs = 500;
@@ -30,6 +28,9 @@ public sealed class AudioPipeline : IAsyncDisposable
     /// <summary>Максимальная длительность isolated pre-scan в секундах.</summary>
 
     private const float IsolatedScanMaxSeconds = 30f;
+
+    /// <summary>Минимум секунд аудио для адекватного EBU R128 pre-scan (±1-2 LU).</summary>
+    private const float MinPreScanSeconds = 10f;
 
     /// <summary>Decimation для Opus — Concentus.Native достаточно быстр при 5.</summary>
     private const int ScanDecimationFactorOpus = 5;
@@ -59,7 +60,7 @@ public sealed class AudioPipeline : IAsyncDisposable
     private readonly AudioStreamInfo _streamInfo;
     private readonly CancellationTokenSource _lifetimeCts;
     private readonly EbuR128Analyzer _analyzer;
-    private TruePeakLimiter? _truePeakLimiter;
+    private readonly TruePeakLimiter? _truePeakLimiter;
     private GainCrossfader _gainCrossfader;
 
     private CancellationTokenSource? _decoderCts;
@@ -153,7 +154,7 @@ public sealed class AudioPipeline : IAsyncDisposable
         _streamInfo = streamInfo;
         _lifetimeCts = lifetimeCts;
 
-        _analyzer = new EbuR128Analyzer(decoder.SampleRate, decoder.Channels);
+        _analyzer = new EbuR128Analyzer();
         _truePeakLimiter = new TruePeakLimiter(decoder.SampleRate);
         _gainCrossfader = new GainCrossfader(1.0f);
     }
@@ -370,6 +371,8 @@ public sealed class AudioPipeline : IAsyncDisposable
             () => DecoderLoopAsync(urlRefresher, options, onTrackEnded, onError, token));
 
 #if DEBUG
+        const int ShortTrackIdLength = 8;
+
         var trackIdShort = _streamInfo.TrackId?.Length > ShortTrackIdLength
             ? _streamInfo.TrackId[..ShortTrackIdLength]
             : _streamInfo.TrackId ?? "?";
@@ -698,7 +701,8 @@ public sealed class AudioPipeline : IAsyncDisposable
 
     /// <summary>
     /// Выполняет pre-scan нормализации через isolated pipeline.
-    /// Не затрагивает <see cref="_source"/>, <see cref="_decoder"/> или <see cref="_decodeBuffer"/>.
+    /// Поддерживает <see cref="Sources.LocalFileSource"/> (полный кэш)
+    /// и <see cref="Sources.CachingStreamSource"/> (partial cache с достаточным contiguous prefix).
     /// </summary>
     /// <param name="ct">Токен отмены.</param>
     public async Task PreScanNormalizationAsync(CancellationToken ct)
@@ -706,33 +710,68 @@ public sealed class AudioPipeline : IAsyncDisposable
         if (!_analyzer.IsEnabled) return;
         if (_analyzer.IsGainLocked) return;
 
-        if (_source is not Sources.LocalFileSource localSource)
+        if (_source is Sources.LocalFileSource localSource)
         {
-            Log.Debug("[AudioPipeline] Pre-scan skipped: source is not LocalFileSource");
+            await RunPreScanForFileAsync(
+                localSource.FilePath, localSource.Codec, ct).ConfigureAwait(false);
             return;
         }
 
+        if (_source is Sources.CachingStreamSource cachingSource)
+        {
+            var cacheManager = AudioSourceFactory.GlobalCache;
+            if (cacheManager == null) return;
+
+            long contiguousBytes = cachingSource.ContiguousPrefixBytes;
+            int bitrate = cachingSource.Bitrate;
+            long minBytes = (long)(Math.Max(1, bitrate) * 1000.0 / 8.0 * MinPreScanSeconds);
+
+            if (contiguousBytes < minBytes)
+            {
+                Log.Debug($"[AudioPipeline] Pre-scan skipped: insufficient contiguous prefix " +
+                          $"({contiguousBytes / 1024}KB < {minBytes / 1024}KB for {MinPreScanSeconds}s)");
+                return;
+            }
+
+            string cachePath = cacheManager.GetCachePath(cachingSource.CacheKey);
+            if (!File.Exists(cachePath)) return;
+
+            float prefixSeconds = (float)(contiguousBytes / (Math.Max(1, bitrate) * 1000.0 / 8.0));
+            float scanSeconds = Math.Min(prefixSeconds, IsolatedScanMaxSeconds);
+
+            await RunPreScanForFileAsync(
+                cachePath, cachingSource.Codec, ct, scanSeconds).ConfigureAwait(false);
+            return;
+        }
+
+        Log.Debug($"[AudioPipeline] Pre-scan skipped: unsupported source type {_source.GetType().Name}");
+    }
+
+    private async Task RunPreScanForFileAsync(
+        string filePath, AudioCodec codec, CancellationToken ct,
+        float scanMaxSeconds = IsolatedScanMaxSeconds)
+    {
         try
         {
             var (integratedLufs, rawGain) = await RunIsolatedPreScanAsync(
-                localSource.FilePath,
-                localSource.Codec,
+                filePath, codec,
                 _analyzer.CurrentConfig.TargetLufs,
                 _analyzer.CurrentConfig.MaxGain,
-                ct).ConfigureAwait(false);
+                ct, scanMaxSeconds).ConfigureAwait(false);
 
             if (float.IsFinite(integratedLufs))
                 _analyzer.NotifyIntegratedLufs(integratedLufs);
 
             _analyzer.LockGain(rawGain);
 
-            Log.Debug($"[AudioPipeline] Isolated pre-scan complete: " +
-                      $"lufs={integratedLufs:F2}, gain={rawGain:F4}x, file={Path.GetFileName(localSource.FilePath)}");
+            Log.Debug($"[AudioPipeline] Pre-scan complete: lufs={integratedLufs:F2}, " +
+                      $"gain={rawGain:F4}x, limit={scanMaxSeconds:F1}s, " +
+                      $"file={Path.GetFileName(filePath)}");
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            Log.Warn($"[AudioPipeline] Isolated pre-scan failed: {ex.Message}");
+            Log.Warn($"[AudioPipeline] Pre-scan failed: {ex.Message}");
         }
     }
 
@@ -876,18 +915,18 @@ public sealed class AudioPipeline : IAsyncDisposable
     /// Основной цикл чтения фреймов и вычисления EBU R128 integrated LUFS.
     /// </summary>
     private static async Task<(float IntegratedLufs, float RawGain)> ScanFramesAsync(
-    IContainerParser parser,
-    IAudioDecoder decoder,
-    int sampleRate,
-    int channels,
-    float[] decodeBuffer,
-    double[] filteredBuffer,
-    float targetLufs,
-    float maxGain,
-    int decimationFactor,
-    int nominalSamplesPerFrame,
-    float scanMaxSeconds,
-    CancellationToken ct)
+        IContainerParser parser,
+        IAudioDecoder decoder,
+        int sampleRate,
+        int channels,
+        float[] decodeBuffer,
+        double[] filteredBuffer,
+        float targetLufs,
+        float maxGain,
+        int decimationFactor,
+        int nominalSamplesPerFrame,
+        float scanMaxSeconds,
+        CancellationToken ct)
     {
         var scanFilter = new Helpers.KWeightingFilter(sampleRate, channels);
         var blockSumSq = new double[channels];
@@ -1004,7 +1043,7 @@ public sealed class AudioPipeline : IAsyncDisposable
             var samples = buffer[..read];
 
             float normGain = _analyzer.IsEnabled
-                ? _analyzer.ProcessSamples(samples)
+                ? _analyzer.ProcessSamples()
                 : 1.0f;
 
             _gainCrossfader.SetTarget(normGain, _decoder.SampleRate, _decoder.Channels);

@@ -84,6 +84,18 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     /// </summary>
     private const int MaxCacheAutoRetries = 2;
 
+    /// <summary>
+    /// Окно EBU R128 pre-scan для full-cache источника (LocalFileSource).
+    /// Файл полностью доступен локально — можно позволить более глубокий анализ.
+    /// </summary>
+    private const int PreScanDurationFullCacheMs = 80_000;
+
+    /// <summary>
+    /// Окно EBU R128 pre-scan для streaming и partial-cache источников.
+    /// Ограничено для минимизации задержки первого аудио-фрейма.
+    /// </summary>
+    private const int PreScanDurationStreamingMs = 45_000;
+
     #endregion
 
     #region Dependencies
@@ -120,7 +132,8 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
         long Size,
         int Bitrate,
         AudioFormat Format,
-        AudioCodec Codec);
+        AudioCodec Codec,
+        float IntegratedLufs = float.NaN);
 
     /// <summary>
     /// Task цикла обработки команд (<see cref="ProcessCommandsAsync"/>).
@@ -331,7 +344,6 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     /// </summary>
     private void ConfigurePipelineBeforeStart(AudioPipeline pipeline, string? trackId)
     {
-        // Устранение уязвимости пустого логирования "Pipeline ''" при deferred seek
         trackId ??= pipeline.StreamInfo.TrackId;
 
         float volumeGain = ComputeFinalGain();
@@ -339,15 +351,26 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
         _player.SetVolumeGain(volumeGain);
 
         var audioSettings = _library.Settings.Audio;
+
+        // Pre-scan window:
+        // Full-cache (LocalFileSource) — файл полностью доступен локально,
+        // можно позволить более глубокий анализ без влияния на startup time.
+        // Streaming/partial-cache — ограничиваем 30с, чтобы не задержать первый аудио-фрейм.
+        bool isFullCache = pipeline.Source is Audio.Sources.LocalFileSource;
+        int preScanDurationMs = isFullCache ? PreScanDurationFullCacheMs : PreScanDurationStreamingMs;
+
         var normConfig = new NormalizationConfig(
             audioSettings.NormalizationEnabled,
             audioSettings.NormalizationTargetLufs,
             audioSettings.NormalizationMaxGain,
-            audioSettings.NormalizationMode);
+            audioSettings.NormalizationMode,
+            preScanDurationMs);
 
         pipeline.Analyzer.Configure(normConfig);
 
-        Log.Debug($"[AudioEngine] Configuring pipeline for '{trackId}'. Normalization: {normConfig.Enabled}, Mode: {normConfig.Mode}");
+        Log.Debug($"[AudioEngine] Configuring pipeline for '{trackId}'. " +
+                  $"Normalization: {normConfig.Enabled}, Mode: {normConfig.Mode}, " +
+                  $"PreScan: {preScanDurationMs / 1000}s");
 
         if (normConfig.Enabled && !string.IsNullOrEmpty(trackId))
         {
@@ -356,6 +379,8 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
             var track = registryTrack ?? (currentTrack?.Id == trackId ? currentTrack : null);
             var cacheEntry = FindNormalizationCacheEntry(trackId);
 
+            // HydrateNormalization делегирует приоритет в SetIntegratedLufs —
+            // не перезапишет YoutubePerceptual значением EbuMeasured из кэша.
             if (track != null && cacheEntry != null)
                 TrackNormalizationHydrator.HydrateNormalization(track, cacheEntry);
 
@@ -665,6 +690,7 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
             .TryGetManifestAndProbeAsync(track.Id, Audio.Http.SharedHttpClient.Instance, ct)
             .ConfigureAwait(false);
 
+        // Cache
         if (diskEntry != null)
         {
             var selectedVariant = SelectBestVariantFromEntry(diskEntry.Variants, requested.Format);
@@ -675,7 +701,8 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
                     selectedVariant.Clen,
                     selectedVariant.Bitrate / 1000,
                     selectedVariant.Format,
-                    selectedVariant.CodecType);
+                    selectedVariant.CodecType,
+                    diskEntry.IntegratedLufs);
             }
         }
 
@@ -685,12 +712,14 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
 
         var d = descriptor.Value;
 
+        // YouTube API path
         return new ContinuationUrlResult(
             d.Url,
             d.ContentLengthBytes,
             d.BitrateKbps,
             d.Format,
-            d.Codec);
+            d.Codec,
+            d.IntegratedLufs);
     }
 
     /// <summary>
@@ -714,16 +743,29 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     }
 
     /// <summary>
-    /// Сохраняет resolved integrated loudness трека в runtime-модели, AudioCache и очередь DB persistence.
+    /// Сохраняет resolved integrated loudness в runtime-модели, AudioCache и очередь DB persistence.
     /// </summary>
-    /// <param name="trackId">Идентификатор трека.</param>
-    /// <param name="integratedLufs">Integrated loudness в LUFS.</param>
-    /// <param name="source">Источник значения.</param>
+    /// <remarks>
+    /// Единственный канал записи LUFS во все хранилища.
+    /// Приоритет источника определяется числовым порядком <see cref="LoudnessSource"/> —
+    /// отдельная функция ShouldOverwriteLufs не нужна и удалена.
+    ///
+    /// Обновляет три runtime-слоя:
+    /// <list type="number">
+    ///   <item>canonical — объект из LibraryService (persistent DB entity)</item>
+    ///   <item>registryTrack — L1 in-memory registry (если отличается от canonical)</item>
+    ///   <item>currentTrack — активный объект в UI (если отличается от обоих выше)</item>
+    /// </list>
+    /// Плюс cache entry (все format/bitrate buckets трека) и очередь DB writes.
+    /// </remarks>
     private void CommitIntegratedLufs(string trackId, float integratedLufs, LoudnessSource source)
     {
         if (string.IsNullOrEmpty(trackId) || !float.IsFinite(integratedLufs))
             return;
 
+        // Обновляем все три runtime-слоя.
+        // SetIntegratedLufs сам проверяет приоритет через enum numeric order —
+        // YoutubePerceptual(2) не будет перезаписан EbuMeasured(1).
         var canonical = _library.GetTrack(trackId);
         canonical?.SetIntegratedLufs(integratedLufs, source);
 
@@ -740,7 +782,9 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
             current.SetIntegratedLufs(integratedLufs, source);
         }
 
+        // Обновляем ВСЕ cache entries трека (все format/bitrate buckets).
         AudioSourceFactory.GlobalCache?.TryUpdateIntegratedLufs(trackId, integratedLufs, source);
+
         _pendingNormalizationWrites.Enqueue((trackId, integratedLufs, source));
     }
 
@@ -1086,6 +1130,16 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
 
             TryAttachPrimedContinuationUrlToActiveSource(track, result.Value.Url);
 
+            if (float.IsFinite(result.Value.IntegratedLufs))
+            {
+                CommitIntegratedLufs(
+                    track.Id,
+                    result.Value.IntegratedLufs,
+                    LoudnessSource.YoutubePerceptual);
+
+                UpdateRunningPipelineGain(track.Id, result.Value.IntegratedLufs);
+            }
+
             Log.Info($"[AudioEngine] Partial-cache continuation primed: {track.Id} " +
                      $"({result.Value.Codec.ToDisplayName()}/{result.Value.Bitrate}kbps)");
         }
@@ -1186,8 +1240,8 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
 
         // 3. Session cache (disk manifest)
         var diskEntry = await SessionCacheStore
-      .TryGetManifestAndProbeAsync(track.Id, Audio.Http.SharedHttpClient.Instance, ct)
-      .ConfigureAwait(false);
+            .TryGetManifestAndProbeAsync(track.Id, Audio.Http.SharedHttpClient.Instance, ct)
+            .ConfigureAwait(false);
 
         if (diskEntry is { Variants.Count: > 0 })
         {

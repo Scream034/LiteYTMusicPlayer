@@ -12,9 +12,6 @@ public sealed partial class AudioEngine
     private bool _volumeInitialized;
     private readonly Lock _volumeLock = new();
 
-    /// <summary>Кэшированный словарь для flush gain writes — reuse через Clear().</summary>
-    private readonly Dictionary<string, float> _gainBatch = new(StringComparer.Ordinal);
-
     /// <summary>
     /// Кэшированный словарь для flush normalization metadata — reuse через Clear().
     /// </summary>
@@ -101,6 +98,34 @@ public sealed partial class AudioEngine
         float gain = ComputeFinalGain();
         _currentGain = gain;
         _player.SetVolumeGain(gain);
+    }
+
+    /// <summary>
+    /// Обновляет gain нормализации в running pipeline при получении более точного LUFS.
+    /// </summary>
+    private void UpdateRunningPipelineGain(string trackId, float integratedLufs)
+    {
+        if (!float.IsFinite(integratedLufs)) return;
+
+        var pipeline = _player.GetActivePipeline();
+        if (pipeline == null) return;
+        if (!string.Equals(pipeline.StreamInfo.TrackId, trackId, StringComparison.Ordinal)) return;
+
+        var audioSettings = _library.Settings.Audio;
+        if (!audioSettings.NormalizationEnabled) return;
+
+        var normConfig = new NormalizationConfig(
+            audioSettings.NormalizationEnabled,
+            audioSettings.NormalizationTargetLufs,
+            audioSettings.NormalizationMaxGain,
+            audioSettings.NormalizationMode);
+
+        float gain = NormalizationGainResolver.ComputeGainFromIntegratedLufs(integratedLufs, normConfig);
+        if (float.IsNaN(gain)) return;
+
+        pipeline.Analyzer.LockResolvedGain(gain);
+        Log.Info($"[AudioEngine] Normalization gain updated from YouTube LUFS: " +
+                 $"{gain:F4}x (lufs={integratedLufs:F2}) for {trackId}");
     }
 
     /// <summary>

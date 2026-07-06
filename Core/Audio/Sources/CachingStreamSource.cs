@@ -290,6 +290,12 @@ public sealed partial class CachingStreamSource : IAudioSource
     /// <summary>Парсер контейнера. Доступен для диагностики.</summary>
     internal IContainerParser? Parser => _parser;
 
+    /// <summary>Уникальный ключ записи в дисковом кэше.</summary>
+    public string CacheKey => _cacheKey;
+
+    /// <summary>Количество непрерывных байт от начала файла (contiguous prefix).</summary>
+    public long ContiguousPrefixBytes => _cacheEntry?.GetContiguousDownloadedBytesFrom(0) ?? 0;
+
     /// <summary>
     /// Глобальное событие о non-fatal сетевых проблемах источника.
     /// </summary>

@@ -699,7 +699,7 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
             {
                 var lufsCb = _options.OnIntegratedLufsResolved;
                 pipeline.Analyzer.SetIntegratedLufsCallback(
-                    lufs => lufsCb(lockedTrackId, lufs, Normalization.LoudnessSource.EbuPreScan));
+                    lufs => lufsCb(lockedTrackId, lufs, Normalization.LoudnessSource.EbuMeasured));
             }
 
             if (pipeline.IsDeviceLost)

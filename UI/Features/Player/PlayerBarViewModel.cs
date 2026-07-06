@@ -77,8 +77,6 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
     private bool _isSeeking;
     private bool _isInitialized;
 
-    private long _lastDownloadedBytes;
-    private DateTime _lastSpeedCheck = DateTime.MinValue;
     private int _lastVolumeBeforeMute = DefaultVolume;
 
     private DateTime _trackResetStartTime;
@@ -934,7 +932,6 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
         {
             if (isNewTrack)
             {
-                _lastDownloadedBytes = 0;
                 _lastValidStreamInfo = "";
                 AvailableFormats.Clear();
                 _pendingStreamInfoTrackId = track.Id;
@@ -1025,9 +1022,6 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
             IsLiked = storedTrack.IsLiked;
             CurrentTrack.IsLiked = storedTrack.IsLiked;
         }
-
-        _lastDownloadedBytes = _audio.GetDownloadedBytes();
-        _lastSpeedCheck = DateTime.UtcNow;
 
         NetworkSpeedText = "";
         PingText = "";
@@ -1580,9 +1574,6 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
 
         IsSeekBusy = false;
         IsFormatsLoading = false;
-
-        _lastDownloadedBytes = _audio.GetDownloadedBytes();
-        _lastSpeedCheck = DateTime.UtcNow;
 
         SubscribeHeavy();
 

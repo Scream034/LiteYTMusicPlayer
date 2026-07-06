@@ -170,38 +170,99 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
-    /// Пытается сохранить integrated loudness в metadata лучшего кэша трека.
-    /// Пока additive-path: старая gain-модель не затрагивается.
+    /// Обновляет integrated loudness во ВСЕХ cache entries данного трека.
     /// </summary>
+    /// <remarks>
+    /// Обновляет все entries, а не только «лучшую», потому что при повторном play
+    /// может быть выбрана другая entry (другой format/bitrate bucket).
+    /// Без обновления всех entries YouTube LUFS терялся бы при смене active entry.
+    ///
+    /// Приоритет источника определяется числовым порядком <see cref="LoudnessSource"/>:
+    /// <see cref="LoudnessSource.YoutubePerceptual"/> (2) всегда перезаписывает
+    /// <see cref="LoudnessSource.EbuMeasured"/> (1).
+    /// </remarks>
     /// <param name="trackId">Идентификатор трека.</param>
     /// <param name="integratedLufs">Integrated loudness в LUFS.</param>
-    /// <param name="source">Источник loudness.</param>
-    /// <returns><c>true</c>, если metadata была обновлена.</returns>
+    /// <param name="source">Источник значения.</param>
+    /// <returns><c>true</c>, если хотя бы одна entry была обновлена.</returns>
     public bool TryUpdateIntegratedLufs(string trackId, float integratedLufs, LoudnessSource source)
     {
         if (string.IsNullOrEmpty(trackId) || !float.IsFinite(integratedLufs))
             return false;
 
-        var entry = FindBestCache(trackId) ?? FindBestStartupCache(trackId, 0);
-        if (entry == null)
+        var keys = CollectAllCacheKeysForTrack(trackId);
+        if (keys.Count == 0)
             return false;
 
-        var existingSource = (LoudnessSource)entry.IntegratedLufsSource;
-        if (existingSource > source)
-            return false;
+        bool anyUpdated = false;
 
-        if (entry.IntegratedLufs is float existingLufs
-            && MathF.Abs(existingLufs - integratedLufs) < 0.01f
-            && existingSource == source)
+        foreach (var cacheKey in keys)
         {
-            return false;
+            if (!_entries.TryGetValue(cacheKey, out var entry))
+                continue;
+
+            var existingSource = (LoudnessSource)entry.IntegratedLufsSource;
+
+            // Числовой порядок enum = приоритет: YoutubePerceptual(2) > EbuMeasured(1) > Unknown(0)
+            if (existingSource > source)
+                continue;
+
+            // Skip если значение идентично — не дёргаем SaveIndexAsync без причины
+            if (entry.IntegratedLufs is float existing
+                && MathF.Abs(existing - integratedLufs) < 0.01f
+                && existingSource == source)
+            {
+                continue;
+            }
+
+            entry.IntegratedLufs = integratedLufs;
+            entry.IntegratedLufsSource = (int)source;
+            entry.LastAccessedAt = DateTime.UtcNow;
+            anyUpdated = true;
         }
 
-        entry.IntegratedLufs = integratedLufs;
-        entry.IntegratedLufsSource = (int)source;
-        entry.LastAccessedAt = DateTime.UtcNow;
-        _ = SaveIndexAsync();
-        return true;
+        if (anyUpdated)
+            _ = SaveIndexAsync();
+
+        return anyUpdated;
+    }
+
+    /// <summary>
+    /// Собирает все cacheKey для трека, включая варианты ID с/без доменного префикса.
+    /// </summary>
+    /// <remarks>
+    /// Трек может иметь несколько entries под разными cacheKey
+    /// (разные format/bitrate: WebM/160, Mp4/128 и т.д.).
+    /// Также ID может встречаться как с префиксом <c>yt_</c>, так и без.
+    /// </remarks>
+    private List<string> CollectAllCacheKeysForTrack(string trackId)
+    {
+        // Начальная ёмкость 4: типичный трек имеет 1-2 entries,
+        // редко больше (разные форматы одного трека).
+        var keys = new List<string>(4);
+
+        AppendKeysFromIndex(trackId, keys);
+
+        var rawId = TryGetRawTrackId(trackId);
+        if (!string.IsNullOrEmpty(rawId))
+            AppendKeysFromIndex(rawId, keys);
+
+        if (!IsPrefixedTrackId(trackId))
+            AppendKeysFromIndex(string.Concat("yt_", trackId), keys);
+
+        return keys;
+    }
+
+    /// <summary>
+    /// Добавляет cacheKey из trackIndex в список, если они там есть.
+    /// </summary>
+    private void AppendKeysFromIndex(string trackId, List<string> target)
+    {
+        if (_trackIndex.TryGetValue(trackId, out var index))
+        {
+            foreach (var key in index.Keys)
+                target.Add(key);
+        }
     }
 
     private AudioCacheEntry? FindBestStartupCacheCore(string trackId, int minContiguousBytes)

@@ -13,20 +13,22 @@ public enum NormalizationMode
 }
 
 /// <summary>
-/// Иммутабельная конфигурация нормализации.
-/// Заменяет россыпь параметров <c>(bool, float, float, NormalizationMode)</c>
-/// в <see cref="AudioPipeline.SetNormalization"/> и <c>ConfigurePipelineBeforeStart</c>.
+/// Конфигурация нормализации громкости для одного pipeline.
 /// </summary>
 /// <param name="Enabled">Включена ли нормализация.</param>
-/// <param name="TargetLufs">Целевой уровень LUFS (по умолчанию −14, как Spotify/YouTube).</param>
-/// <param name="MaxGain">Максимальный gain нормализации (защита от перегрузки).</param>
-/// <param name="Mode">Режим: Bidirectional (Spotify) или DownwardOnly (YouTube).</param>
+/// <param name="TargetLufs">Целевой уровень громкости в LUFS.</param>
+/// <param name="MaxGain">Максимальный gain-множитель.</param>
+/// <param name="Mode">Режим нормализации (Upward / Downward / Bidirectional).</param>
+/// <param name="PreScanDurationMs">
+/// Длительность EBU R128 pre-scan в миллисекундах.
+/// <list type="bullet">
+///   <item>30 000 мс — для streaming и partial-cache (по умолчанию).</item>
+///   <item>60 000 мс — для full-cache (файл доступен целиком, точность важнее).</item>
+/// </list>
+/// </param>
 public readonly record struct NormalizationConfig(
     bool Enabled,
-    float TargetLufs = -14f,
-    float MaxGain = 3.0f,
-    NormalizationMode Mode = NormalizationMode.Bidirectional)
-{
-    /// <summary>Конфигурация по умолчанию: нормализация отключена.</summary>
-    public static readonly NormalizationConfig Disabled = new(false);
-}
+    float TargetLufs,
+    float MaxGain,
+    NormalizationMode Mode,
+    int PreScanDurationMs = 30_000);
