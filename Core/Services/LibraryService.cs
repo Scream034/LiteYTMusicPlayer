@@ -95,7 +95,7 @@ public sealed class LibraryService : IAsyncDisposable
             .ObserveOn(RxSchedulers.TaskpoolScheduler)
             .Subscribe(async _ =>
             {
-                try { await _settings.SetAsync("AppSettings", Settings); }
+                try { await _settings.SetAsync("AppSettings", Settings, AppJsonContext.Default.AppSettings); }
                 catch (Exception ex) { Log.Error($"[LibraryService] Settings save failed: {ex.Message}"); }
             });
     }
@@ -180,7 +180,8 @@ public sealed class LibraryService : IAsyncDisposable
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        Settings = await _settings.GetOrDefaultAsync("AppSettings", new AppSettings(), ct).ConfigureAwait(false);
+        Settings = await _settings.GetOrDefaultAsync("AppSettings", new AppSettings(),
+            AppJsonContext.Default.AppSettings, ct);
 
         bool requireSave = false;
 
@@ -201,7 +202,7 @@ public sealed class LibraryService : IAsyncDisposable
 
         if (requireSave)
         {
-            await _settings.SetAsync("AppSettings", Settings, ct).ConfigureAwait(false);
+            await _settings.SetAsync("AppSettings", Settings, AppJsonContext.Default.AppSettings, ct).ConfigureAwait(false);
         }
 
         YoutubeClientUtils.CurrentProfile = Settings.YoutubeClient;
@@ -328,7 +329,7 @@ public sealed class LibraryService : IAsyncDisposable
             }
 
             Settings = MapLegacySettings(legacy);
-            await _settings.SetAsync("AppSettings", Settings, ct).ConfigureAwait(false);
+            await _settings.SetAsync("AppSettings", Settings, AppJsonContext.Default.AppSettings, ct).ConfigureAwait(false);
 
             var backup = path + $".migrated.{DateTime.Now:yyyyMMddHHmmss}";
             File.Move(path, backup);
@@ -824,7 +825,8 @@ public sealed class LibraryService : IAsyncDisposable
     public async Task<List<string>> GetSearchHistoryAsync(CancellationToken ct = default)
     {
         var key = $"SearchHistory_{CurrentOwnerId}";
-        return await _settings.GetOrDefaultAsync(key, new List<string>(), ct).ConfigureAwait(false);
+        return await _settings.GetOrDefaultAsync(key, new List<string>(),
+            AppJsonContext.Default.ListString, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -833,7 +835,7 @@ public sealed class LibraryService : IAsyncDisposable
     public async Task SaveSearchHistoryAsync(List<string> history, CancellationToken ct = default)
     {
         var key = $"SearchHistory_{CurrentOwnerId}";
-        await _settings.SetAsync(key, history, ct).ConfigureAwait(false);
+        await _settings.SetAsync(key, history, AppJsonContext.Default.ListString, ct).ConfigureAwait(false);
     }
 
     #endregion
@@ -879,7 +881,7 @@ public sealed class LibraryService : IAsyncDisposable
         _saveSettingsSignal.Dispose();
 
         await _registry.FlushAsync().ConfigureAwait(false);
-        await _settings.SetAsync("AppSettings", Settings).ConfigureAwait(false);
+        await _settings.SetAsync("AppSettings", Settings, AppJsonContext.Default.AppSettings).ConfigureAwait(false);
 
         GC.SuppressFinalize(this);
 

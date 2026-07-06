@@ -54,6 +54,7 @@ namespace LMP.Core.Models;
 [JsonSerializable(typeof(LikeSyncMode))]
 [JsonSerializable(typeof(NTokenNotificationMode))]
 [JsonSerializable(typeof(PlaybackFailureBehavior))]
+[JsonSerializable(typeof(List<string>))]
 [JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSourceGenerationOptions(

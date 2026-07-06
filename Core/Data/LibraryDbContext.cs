@@ -1,9 +1,15 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using LMP.Core.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 
 namespace LMP.Core.Data;
 
+[UnconditionalSuppressMessage(
+    "Trimming",
+    "IL2026:RequiresUnreferencedCode",
+    Justification = "LibraryDbContext is fully preserved via trimming.xml root descriptor. " +
+                    "All entity types and EF Core assemblies are explicitly protected.")]
 public sealed class LibraryDbContext(DbContextOptions<LibraryDbContext> options) : DbContext(options)
 {
     public DbSet<TrackEntity> Tracks => Set<TrackEntity>();

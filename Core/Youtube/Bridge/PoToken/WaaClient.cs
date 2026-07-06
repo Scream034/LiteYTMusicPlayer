@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 
 namespace LMP.Core.Youtube.Bridge.PoToken;
@@ -278,6 +279,12 @@ internal static class WaaClient
         }
     }
 
+    [UnconditionalSuppressMessage(
+    "Trimming",
+    "IL2026:RequiresUnreferencedCode",
+    Justification = "WaaClient serializes object[] payloads for PoToken Google API requests. " +
+                    "Payload contains only primitive types (string, object[]) — " +
+                    "no custom types requiring reflection preservation.")]
     private static HttpRequestMessage BuildRequest(string url, object payload)
     {
         var req = new HttpRequestMessage(HttpMethod.Post, url)

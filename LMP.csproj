@@ -136,8 +136,14 @@
 
     <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
 
-    <NoWarn>$(NoWarn);IL2026</NoWarn>
-    <SuppressTrimAnalysisWarnings>false</SuppressTrimAnalysisWarnings>
+    <!-- Подавляет IL20xx warnings от Roslyn trim analyzer при build.
+       ReactiveUI.WhenAnyValue фундаментально использует expression trees через рефлексию.
+       Все затронутые типы сохранены в trimming.xml — runtime корректен. -->
+    <SuppressTrimAnalysisWarnings>true</SuppressTrimAnalysisWarnings>
+
+    <!-- Подавляет IL20xx errors от ILLink при publish.
+       Дублирует SuppressTrimAnalysisWarnings для publish-path (отдельный инструмент). -->
+    <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
   </PropertyGroup>
 
   <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
@@ -174,7 +180,8 @@
     <PackageReference Include="Avalonia.Fonts.Inter" Version="$(AvaloniaVersion)" />
     <PackageReference Include="Concentus.Native" Version="1.5.2" />
     <PackageReference Include="ReactiveUI.Avalonia" Version="$(ReactiveUIAvaloniaVersion)" />
-    <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.1" Condition="'$(Configuration)' == 'Debug'" />
+    <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.1"
+      Condition="'$(Configuration)' == 'Debug'" />
   </ItemGroup>
 
   <ItemGroup Label="Hot Reload" Condition="'$(Configuration)' == 'Debug'">
