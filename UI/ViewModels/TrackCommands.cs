@@ -43,7 +43,7 @@ internal sealed class TrackAsyncCommand : ICommand
         }
         finally
         {
-            Interlocked.Exchange(ref _isExecuting, 0);
+            Volatile.Write(ref _isExecuting, 0);
         }
     }
 }

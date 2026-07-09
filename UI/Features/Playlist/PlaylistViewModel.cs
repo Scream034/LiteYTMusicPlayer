@@ -820,7 +820,7 @@ public sealed partial class PlaylistViewModel : TrackListReorderableViewModel, I
         {
             IsSyncing = false;
             _mainWindow.UnlockNavigation();
-            Interlocked.Exchange(ref _syncInProgressGate, 0);
+            Volatile.Write(ref _syncInProgressGate, 0);
         }
     }
 

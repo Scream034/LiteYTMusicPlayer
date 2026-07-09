@@ -922,7 +922,7 @@ public sealed partial class CachingStreamSource
                 return RangeDownloadResult.OutOfRange;
             }
 
-            Interlocked.Exchange(ref _consecutive403Count, 0);
+            Volatile.Write(ref _consecutive403Count, 0);
 
             // Регистрация CDN-хоста для спекулятивного прогрева
             // После первого успешного ответа запоминаем CDN-ноду.
@@ -1263,7 +1263,7 @@ public sealed partial class CachingStreamSource
             var previousUrl = _currentUrl;
             await RefreshUrlAsync(ct).ConfigureAwait(false);
             _lastRefreshTime = DateTime.UtcNow;
-            Interlocked.Exchange(ref _consecutive403Count, 0);
+            Volatile.Write(ref _consecutive403Count, 0);
             Log.Info("[CachingSource] 403 counter reset after URL refresh");
 
             var newNToken = UrlEx.TryGetQueryParameterValue(_currentUrl, "n");
@@ -1274,7 +1274,7 @@ public sealed partial class CachingStreamSource
                 int failures = Interlocked.Increment(ref _consecutiveRefreshFailures);
                 Log.Warn($"[CachingSource] n-token unchanged after refresh (attempt {failures}/{MaxRefreshFailuresBeforeCircuitBreak})");
             }
-            else Interlocked.Exchange(ref _consecutiveRefreshFailures, 0);
+            else Volatile.Write(ref _consecutiveRefreshFailures, 0);
 
             await Task.Delay(_config.PostRefreshDelayMs, ct).ConfigureAwait(false);
         }

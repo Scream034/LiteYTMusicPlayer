@@ -403,7 +403,7 @@ public sealed class ImageCacheService : IDisposable
             _memoryCache.Clear();
             _lruOrder.Clear();
             _lruIndex.Clear();
-            Interlocked.Exchange(ref _currentMemoryCacheBytes, 0);
+            Volatile.Write(ref _currentMemoryCacheBytes, 0);
         }
 
         if (totalBytes > 0)
@@ -418,7 +418,7 @@ public sealed class ImageCacheService : IDisposable
             foreach (var f in Directory.GetFiles(G.Folder.ImageCache))
                 try { File.Delete(f); } catch { }
 
-            Interlocked.Exchange(ref _currentDiskCacheBytes, 0);
+            Volatile.Write(ref _currentDiskCacheBytes, 0);
         });
     }
 
@@ -429,7 +429,7 @@ public sealed class ImageCacheService : IDisposable
             long total = new DirectoryInfo(G.Folder.ImageCache)
                 .EnumerateFiles()
                 .Sum(static f => f.Length);
-            Interlocked.Exchange(ref _currentDiskCacheBytes, total);
+            Volatile.Write(ref _currentDiskCacheBytes, total);
         }
         catch { }
     }

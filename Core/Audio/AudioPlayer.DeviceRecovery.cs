@@ -38,7 +38,7 @@ public sealed partial class AudioPlayer
     /// </summary>
     private Task HandleDeviceLostAsync(DeviceLostCommand cmd)
     {
-        if (_disposed || _activePipeline != cmd.Pipeline || _session.IsStale(cmd.SessionId))
+        if (IsPipelineCommandStale(cmd.Pipeline, cmd.SessionId))
             return Task.CompletedTask;
 
         CancelActiveSeek();
@@ -56,7 +56,7 @@ public sealed partial class AudioPlayer
     /// </summary>
     private async Task HandleDeviceAvailableAsync(DeviceAvailableCommand cmd)
     {
-        if (_disposed || _activePipeline != cmd.Pipeline || _session.IsStale(cmd.SessionId))
+        if (IsPipelineCommandStale(cmd.Pipeline, cmd.SessionId))
             return;
 
         if (CurrentPlaybackIntent != PlaybackIntent.Play)
@@ -131,37 +131,10 @@ public sealed partial class AudioPlayer
                 return;
             }
 
-            if (pcmReady && sourceReady)
-            {
-                ResumePlaybackSequence(
-                    pipeline,
-                    startTimers: true,
-                    configurePipeline: true,
-                    trackId: _currentTrackId);
-            }
-            else
-            {
-                Log.Warn($"[AudioPlayer] Device recovery warmup incomplete " +
-                         $"(ring={pipeline.BufferedSamples}/{warmupPlan.PcmThresholdSamples}, " +
-                         $"ahead={GetSourceBufferedAheadMs(pipeline)}ms/{warmupPlan.SourceAheadMs}ms). " +
-                         "Staying in Buffering.");
-
-                SetState(PlayerState.Buffering);
-                pipeline.ActivateBufferingMode();
-
-                int seekGeneration = Volatile.Read(ref _seekGeneration);
-                var deferredResumeCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
-                var previousCts = Interlocked.Exchange(ref _deferredResumeCts, deferredResumeCts);
-                CancelCtsAsync(previousCts);
-
-                _ = AwaitDeferredSeekBufferAndResumeAsync(
-                    pipeline,
-                    warmupPlan.PcmThresholdSamples,
-                    warmupPlan.SourceAheadMs,
-                    cmd.SessionId,
-                    seekGeneration,
-                    deferredResumeCts);
-            }
+            SetState(PlayerState.Buffering);
+            ResumeOrDefer(pipeline, pcmReady, sourceReady, warmupPlan, cmd.SessionId,
+                startTimers: true, configurePipeline: true,
+                trackId: _currentTrackId, logContext: "Device recovery warmup");
 
             Log.Info("[AudioPlayer] Device recovery complete");
             _events.RaiseDeviceRestored();

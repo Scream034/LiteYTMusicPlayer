@@ -60,7 +60,7 @@ public sealed partial class AudioPlayer
 
         if (_backgroundSeekActive || Interlocked.Read(ref _pendingSeekMs) >= 0)
         {
-            Interlocked.Exchange(ref _pendingSeekMs, targetMs);
+            Volatile.Write(ref _pendingSeekMs, targetMs);
             return ValueTask.CompletedTask;
         }
 
@@ -71,7 +71,7 @@ public sealed partial class AudioPlayer
 
         int seekGeneration = Interlocked.Increment(ref _seekGeneration);
 
-        Interlocked.Exchange(ref _pendingSeekMs, targetMs);
+        Volatile.Write(ref _pendingSeekMs, targetMs);
         _commandChannel.Writer.TryWrite(new SeekCommand(position, _session.Current, seekGeneration, tcs));
 
         return ValueTask.CompletedTask;
@@ -115,8 +115,8 @@ public sealed partial class AudioPlayer
     internal void ResetPerTrackCounters()
     {
 #if DEBUG
-        Interlocked.Exchange(ref _seekRestartCount, 0);
-        Interlocked.Exchange(ref _decoderRestartCount, 0);
+        Volatile.Write(ref _seekRestartCount, 0);
+        Volatile.Write(ref _decoderRestartCount, 0);
 #endif
     }
 
@@ -175,7 +175,7 @@ public sealed partial class AudioPlayer
             }
 
             await CompleteSeekWithCoalescingAsync(
-                pipeline, cmd, posMs, wasPlaying, cmd.SessionId, cmd.SeekGeneration, seekCts)
+                pipeline, cmd, posMs, wasPlaying, cmd.SessionId, seekCts)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -217,7 +217,6 @@ public sealed partial class AudioPlayer
         long initialPosMs,
         bool wasPlaying,
         int sessionAtStart,
-        int seekGeneration,
         CancellationTokenSource seekCts)
     {
         var seekCt = seekCts.Token;
@@ -368,9 +367,10 @@ public sealed partial class AudioPlayer
                         || pipeline.BufferedSamples >= seekThreshold;
 
                     bool sourceReady = IsSourceReadyForResume(pipeline, sourceAheadMs);
-                    bool bufferReady = pcmReady && sourceReady;
 
-                    if (bufferReady || pipeline.Source.IsFullyBuffered)
+                    var warmupPlan = new PlaybackWarmupPlan(seekThreshold, sourceAheadMs, warmupTimeout);
+
+                    if (pcmReady && sourceReady || pipeline.Source.IsFullyBuffered)
                     {
                         ResumePlaybackSequence(
                             pipeline,
@@ -386,20 +386,8 @@ public sealed partial class AudioPlayer
                                  "Entering Buffering state. Playback will auto-resume.");
 
                         _options.OnPipelineConfiguring?.Invoke(pipeline, _currentTrackId);
-                        pipeline.ActivateBufferingMode();
                         SetState(PlayerState.Buffering);
-
-                        var deferredResumeCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
-                        var previousDeferredResumeCts = Interlocked.Exchange(ref _deferredResumeCts, deferredResumeCts);
-                        CancelCtsAsync(previousDeferredResumeCts);
-
-                        _ = AwaitDeferredSeekBufferAndResumeAsync(
-                            pipeline,
-                            seekThreshold,
-                            sourceAheadMs,
-                            sessionAtStart,
-                            seekGeneration,
-                            deferredResumeCts);
+                        LaunchDeferredResume(pipeline, warmupPlan, sessionAtStart);
                     }
                 }
                 else

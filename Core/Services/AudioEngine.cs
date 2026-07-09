@@ -559,12 +559,12 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
             && string.Equals(sealed_, trackId, StringComparison.Ordinal);
     }
 
-    private void ResetSealedFailedTrack() => Interlocked.Exchange(ref _sealedFailedTrackId, null);
+    private void ResetSealedFailedTrack() => Volatile.Write(ref _sealedFailedTrackId, null);
 
     private void SealFailedTrack(string? trackId)
     {
         if (!string.IsNullOrEmpty(trackId))
-            Interlocked.Exchange(ref _sealedFailedTrackId, trackId);
+            Volatile.Write(ref _sealedFailedTrackId, trackId);
     }
 
     private void AbortCurrentTrackPlaybackAfterFatalError(string? trackId)
@@ -867,8 +867,8 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
             }
 
             ct.ThrowIfCancellationRequested();
-            Interlocked.Exchange(ref _nTokenActiveTrackId, track.Id);
-            Interlocked.Exchange(ref _nTokenWarnedTrackId, null);
+            Volatile.Write(ref _nTokenActiveTrackId, track.Id);
+            Volatile.Write(ref _nTokenWarnedTrackId, null);
 
             AudioSourceFactory.PreWarmCdnConnections(
                 Audio.Http.SharedHttpClient.Instance, _lifetimeCts.Token);
@@ -1435,7 +1435,7 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
         // Сбрасываем лимит авто-попыток только при обычном (неавтоматическом) запуске трека
         if (!cmd.IsRetry)
         {
-            Interlocked.Exchange(ref _cacheRetryCount, 0);
+            Volatile.Write(ref _cacheRetryCount, 0);
         }
 
         lock (_queueLock)
@@ -1455,7 +1455,7 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     {
         if (_session.IsStale(cmd.Session)) return;
 
-        Interlocked.Exchange(ref _cacheRetryCount, 0);
+        Volatile.Write(ref _cacheRetryCount, 0);
 
         lock (_queueLock)
         {
@@ -1558,7 +1558,7 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
         {
             Log.Info($"[AudioEngine] SwitchQuality start: track={track.Id}, requestedFormat={track.TransientFormat?.ToContainerName() ?? "-"}, requestedBitrate={track.TransientBitrate}, resumePos={position.TotalMilliseconds}ms");
 
-            Interlocked.Exchange(ref _nTokenActiveTrackId, track.Id);
+            Volatile.Write(ref _nTokenActiveTrackId, track.Id);
             ct.ThrowIfCancellationRequested();
 
             var descriptor = await Task.Run(async () =>
@@ -1916,7 +1916,7 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     {
         if (_player.GetActivePipeline()?.Source is not Audio.Sources.CachingStreamSource cs)
         {
-            Interlocked.Exchange(ref _sourceLifecycleSuspended, 0);
+            Volatile.Write(ref _sourceLifecycleSuspended, 0);
             return;
         }
 

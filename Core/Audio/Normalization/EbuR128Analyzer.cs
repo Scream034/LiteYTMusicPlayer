@@ -140,13 +140,13 @@ public sealed class EbuR128Analyzer
 
         if (needsReset)
         {
-            Interlocked.Exchange(ref _pendingNormReset, 1);
+            _pendingNormReset = 1;
             Log.Debug($"[EbuR128] Normalization ON: target={normalizedConfig.TargetLufs}LUFS, " +
                       $"maxGain={normalizedConfig.MaxGain:F1}x, mode={normalizedConfig.Mode}");
         }
         else if (needsRecalc)
         {
-            Interlocked.Exchange(ref _pendingNormReset, 2);
+            _pendingNormReset = 2;
             Log.Debug($"[EbuR128] Params changed (recalc): target={normalizedConfig.TargetLufs}LUFS, " +
                       $"maxGain={normalizedConfig.MaxGain:F1}x, mode={normalizedConfig.Mode}");
         }
@@ -215,7 +215,7 @@ public sealed class EbuR128Analyzer
 
         gain = Math.Clamp(gain, MinNormalizationGain, effectiveMaxGain);
 
-        Interlocked.Exchange(ref _pendingNormReset, 0);
+        _pendingNormReset = 0;
         _lockedGain = gain;
 
 #if DEBUG
@@ -238,7 +238,7 @@ public sealed class EbuR128Analyzer
 
         gain = Math.Clamp(gain, MinNormalizationGain, _maxGain);
 
-        Interlocked.Exchange(ref _pendingNormReset, 0);
+        _pendingNormReset = 0;
         _lockedGain = gain;
     }
 

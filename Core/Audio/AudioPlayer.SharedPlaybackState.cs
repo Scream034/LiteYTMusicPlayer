@@ -22,13 +22,13 @@ public partial class AudioPlayer
         /// </summary>
         public void Update(long baseSamples, int bufferedSamples, int sampleRate, int channels, bool isPlaying, long durationMs)
         {
-            Interlocked.Exchange(ref _baseSamples, baseSamples);
-            Interlocked.Exchange(ref _bufferedSamples, bufferedSamples);
-            Interlocked.Exchange(ref _baseTimestamp, System.Diagnostics.Stopwatch.GetTimestamp());
-            Interlocked.Exchange(ref _sampleRate, sampleRate);
-            Interlocked.Exchange(ref _channels, channels);
-            Interlocked.Exchange(ref _isPlaying, isPlaying ? 1 : 0);
-            Interlocked.Exchange(ref _durationMs, durationMs);
+            Volatile.Write(ref _baseSamples, baseSamples);
+            Volatile.Write(ref _bufferedSamples, bufferedSamples);
+            Volatile.Write(ref _baseTimestamp, System.Diagnostics.Stopwatch.GetTimestamp());
+            Volatile.Write(ref _sampleRate, sampleRate);
+            Volatile.Write(ref _channels, channels);
+            Volatile.Write(ref _isPlaying, isPlaying ? 1 : 0);
+            Volatile.Write(ref _durationMs, durationMs);
         }
 
         /// <summary>

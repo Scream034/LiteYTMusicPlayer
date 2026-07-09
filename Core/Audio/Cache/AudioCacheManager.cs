@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Microsoft.Win32.SafeHandles;
 using LMP.Core.Audio.Interfaces;
 using static LMP.Core.Audio.AudioConstants;
@@ -16,18 +15,10 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     /// <summary>
     /// Текущая версия схемы metadata кэша.
     /// </summary>
-    /// <remarks>
-    /// <list type="bullet">
-    ///   <item><b>1</b> — legacy chunk-based: <c>ChunkMaskData</c>, <c>TotalChunks</c>, <c>ChunkSize</c>.</item>
-    ///   <item><b>2</b> — range-based: <c>DownloadedRangesData</c>, <c>AlignmentBytes</c>.</item>
-    ///   <item><b>3</b> — lufs нормализация без сохранения gain.</item>
-    /// </list>
-    /// </remarks>
     private const int CurrentSchemaVersion = 3;
 
     /// <summary>
     /// Обёртка индекса кэша с версионированием схемы.
-    /// Используется для сериализации/десериализации JSON-файла metadata.
     /// </summary>
     public sealed class AudioCacheIndexEnvelope
     {
@@ -121,70 +112,18 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     /// <summary>
     /// Возвращает лучший локальный кэш для быстрого старта partially cached трека.
     /// </summary>
-    /// <param name="trackId">Идентификатор трека.</param>
-    /// <param name="minContiguousBytes">
-    /// Минимальный непрерывный префикс от начала файла, достаточный для fast-start.
-    /// </param>
-    /// <returns>
-    /// Лучшую запись кэша, если найден локальный contiguous prefix достаточной длины;
-    /// иначе <c>null</c>.
-    /// </returns>
-    public AudioCacheEntry? FindBestStartupCache(string trackId, int minContiguousBytes)
-    {
-        var entry = FindBestStartupCacheCore(trackId, minContiguousBytes);
-        if (entry != null)
-            return entry;
+    public AudioCacheEntry? FindBestStartupCache(string trackId, int minContiguousBytes) =>
+        TryWithIdVariants(trackId, id => FindBestStartupCacheCore(id, minContiguousBytes));
 
-        var rawTrackId = TryGetRawTrackId(trackId);
-        if (!string.IsNullOrEmpty(rawTrackId))
-        {
-            entry = FindBestStartupCacheCore(rawTrackId, minContiguousBytes);
-            if (entry != null)
-                return entry;
-        }
-
-        if (!IsPrefixedTrackId(trackId))
-            return FindBestStartupCacheCore(string.Concat("yt_", trackId), minContiguousBytes);
-
-        return null;
-    }
-
-    public AudioCacheEntry? FindBestCache(string trackId)
-    {
-        var entry = FindBestCacheCore(trackId);
-        if (entry != null)
-            return entry;
-
-        var rawTrackId = TryGetRawTrackId(trackId);
-        if (!string.IsNullOrEmpty(rawTrackId))
-        {
-            entry = FindBestCacheCore(rawTrackId);
-            if (entry != null)
-                return entry;
-        }
-
-        if (!IsPrefixedTrackId(trackId))
-            return FindBestCacheCore(string.Concat("yt_", trackId));
-
-        return null;
-    }
+    /// <summary>
+    /// Возвращает лучший полностью закэшированный вариант трека.
+    /// </summary>
+    public AudioCacheEntry? FindBestCache(string trackId) =>
+        TryWithIdVariants(trackId, FindBestCacheCore);
 
     /// <summary>
     /// Обновляет integrated loudness во ВСЕХ cache entries данного трека.
     /// </summary>
-    /// <remarks>
-    /// Обновляет все entries, а не только «лучшую», потому что при повторном play
-    /// может быть выбрана другая entry (другой format/bitrate bucket).
-    /// Без обновления всех entries YouTube LUFS терялся бы при смене active entry.
-    ///
-    /// Приоритет источника определяется числовым порядком <see cref="LoudnessSource"/>:
-    /// <see cref="LoudnessSource.YoutubePerceptual"/> (2) всегда перезаписывает
-    /// <see cref="LoudnessSource.EbuMeasured"/> (1).
-    /// </remarks>
-    /// <param name="trackId">Идентификатор трека.</param>
-    /// <param name="integratedLufs">Integrated loudness в LUFS.</param>
-    /// <param name="source">Источник значения.</param>
-    /// <returns><c>true</c>, если хотя бы одна entry была обновлена.</returns>
     public bool TryUpdateIntegratedLufs(string trackId, float integratedLufs, LoudnessSource source)
     {
         if (string.IsNullOrEmpty(trackId) || !float.IsFinite(integratedLufs))
@@ -203,11 +142,9 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
             var existingSource = (LoudnessSource)entry.IntegratedLufsSource;
 
-            // Числовой порядок enum = приоритет: YoutubePerceptual(2) > EbuMeasured(1) > Unknown(0)
             if (existingSource > source)
                 continue;
 
-            // Skip если значение идентично — не дёргаем SaveIndexAsync без причины
             if (entry.IntegratedLufs is float existing
                 && MathF.Abs(existing - integratedLufs) < 0.01f
                 && existingSource == source)
@@ -230,31 +167,21 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     /// <summary>
     /// Собирает все cacheKey для трека, включая варианты ID с/без доменного префикса.
     /// </summary>
-    /// <remarks>
-    /// Трек может иметь несколько entries под разными cacheKey
-    /// (разные format/bitrate: WebM/160, Mp4/128 и т.д.).
-    /// Также ID может встречаться как с префиксом <c>yt_</c>, так и без.
-    /// </remarks>
     private List<string> CollectAllCacheKeysForTrack(string trackId)
     {
-        // Начальная ёмкость 4: типичный трек имеет 1-2 entries,
-        // редко больше (разные форматы одного трека).
         var keys = new List<string>(4);
 
-        AppendKeysFromIndex(trackId, keys);
-
-        var rawId = TryGetRawTrackId(trackId);
-        if (!string.IsNullOrEmpty(rawId))
-            AppendKeysFromIndex(rawId, keys);
-
-        if (!IsPrefixedTrackId(trackId))
-            AppendKeysFromIndex(string.Concat("yt_", trackId), keys);
+        TryWithIdVariants<object>(trackId, id =>
+        {
+            AppendKeysFromIndex(id, keys);
+            return null;
+        });
 
         return keys;
     }
 
     /// <summary>
-    /// Добавляет cacheKey из trackIndex в список, если они там есть.
+    /// Добавляет cacheKey из trackIndex в список.
     /// </summary>
     private void AppendKeysFromIndex(string trackId, List<string> target)
     {
@@ -326,9 +253,39 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
+    /// Применяет поиск <paramref name="find"/> к прямому trackId, raw ID и yt_-prefixed ID
+    /// и возвращает первый не-null результат.
+    /// </summary>
+    /// <remarks>
+    /// Устраняет дублирование паттерна «direct → raw → yt_ prefix» из
+    /// <see cref="FindBestCache"/>, <see cref="FindBestStartupCache"/>
+    /// и <see cref="CollectAllCacheKeysForTrack"/>.
+    /// </remarks>
+    /// <typeparam name="T">Тип результата.</typeparam>
+    /// <param name="trackId">Исходный идентификатор трека.</param>
+    /// <param name="find">Функция поиска по конкретному ID.</param>
+    /// <returns>Первый не-null результат или <c>null</c>.</returns>
+    private static T? TryWithIdVariants<T>(string trackId, Func<string, T?> find) where T : class
+    {
+        var result = find(trackId);
+        if (result != null) return result;
+
+        var rawId = TryGetRawTrackId(trackId);
+        if (!string.IsNullOrEmpty(rawId))
+        {
+            result = find(rawId);
+            if (result != null) return result;
+        }
+
+        if (!IsPrefixedTrackId(trackId))
+            return find(string.Concat("yt_", trackId));
+
+        return null;
+    }
+
+    /// <summary>
     /// Определяет, содержит ли идентификатор доменный префикс трека.
     /// </summary>
-    /// <param name="trackId">Идентификатор трека.</param>
     private static bool IsPrefixedTrackId(string trackId)
     {
         if (string.IsNullOrEmpty(trackId))
@@ -341,7 +298,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     /// <summary>
     /// Возвращает raw YouTube ID без доменного префикса, если он присутствует.
     /// </summary>
-    /// <param name="trackId">Идентификатор трека.</param>
     private static string? TryGetRawTrackId(string trackId)
     {
         if (string.IsNullOrEmpty(trackId))
@@ -434,7 +390,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
         if (bitrate.HasValue) entry.Bitrate = bitrate.Value;
 
         UpdateFileSizeCache(entry);
-        // Handle закроется автоматически при release lease — не нужен ForceClose
         Log.Info($"[AudioCache] Track fully cached: {cacheKey}");
         _ = SaveIndexAsync();
         RaiseFormatCached(entry);
@@ -465,7 +420,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// Записывает произвольный диапазон байт в файл кэша.
-    /// I/O отслеживается через lease-модель для безопасного закрытия дескриптора.
     /// </summary>
     public async ValueTask WriteRangeAsync(
         string cacheKey,
@@ -521,7 +475,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// Читает произвольный диапазон байт из файла кэша.
-    /// I/O отслеживается через lease-модель для безопасного закрытия дескриптора.
     /// </summary>
     public async ValueTask<(IMemoryOwner<byte> Owner, int Length)?> ReadRangeAsync(
         string cacheKey,
@@ -643,10 +596,7 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// Регистрирует lifetime lease на cache-файл.
-    /// Source вызывает при инициализации, чтобы гарантировать жизнь дескриптора
-    /// до явного <see cref="ReleaseLease"/>.
     /// </summary>
-    /// <param name="cacheKey">Уникальный ключ кэша.</param>
     public void AcquireLease(string cacheKey)
     {
         var entry = _fileHandles.GetOrAdd(cacheKey,
@@ -656,10 +606,7 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// Освобождает lifetime lease на cache-файл.
-    /// Если после release не осталось lease'ов и in-flight I/O,
-    /// дескриптор закрывается автоматически.
     /// </summary>
-    /// <param name="cacheKey">Уникальный ключ кэша.</param>
     public void ReleaseLease(string cacheKey)
     {
         if (_fileHandles.TryGetValue(cacheKey, out var entry))
@@ -765,10 +712,8 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
         return result;
     }
 
-    public bool IsFormatCached(string trackId, AudioFormat format, int bitrate)
-    {
-        return IsFullyCached(AudioSourceFactory.BuildCacheKey(trackId, format, bitrate));
-    }
+    public bool IsFormatCached(string trackId, AudioFormat format, int bitrate) =>
+        IsFullyCached(AudioSourceFactory.BuildCacheKey(trackId, format, bitrate));
 
     #endregion
 
@@ -897,15 +842,7 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
             _trackIndex.Clear();
             DisposeAllHandles();
 
-            var dir = new DirectoryInfo(_cacheDirectory);
-            if (dir.Exists)
-            {
-                foreach (var file in dir.GetFiles())
-                {
-                    try { file.Delete(); }
-                    catch (Exception ex) { Log.Warn($"[AudioCache] Failed to delete {file.Name}: {ex.Message}"); }
-                }
-            }
+            DeleteFilesInDirectory(new DirectoryInfo(_cacheDirectory), "AudioCache");
 
             Log.Info("[AudioCache] Cache cleared");
         }
@@ -928,11 +865,7 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
                 if (!dir.Exists) return;
 
                 Log.Info("[AudioCache] Clearing downloads folder...");
-                foreach (var file in dir.GetFiles())
-                {
-                    try { file.Delete(); }
-                    catch (Exception ex) { Log.Warn($"[AudioCache] Failed to delete {file.Name}: {ex.Message}"); }
-                }
+                DeleteFilesInDirectory(dir, "AudioCache");
                 Log.Info("[AudioCache] Downloads cleared");
             }
             catch (Exception ex)
@@ -940,6 +873,22 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
                 Log.Error($"[AudioCache] ClearDownloadsAsync error: {ex.Message}");
             }
         }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Удаляет все файлы в директории с логированием ошибок.
+    /// </summary>
+    /// <param name="dir">Директория.</param>
+    /// <param name="logTag">Тег для лога ошибок.</param>
+    private static void DeleteFilesInDirectory(DirectoryInfo dir, string logTag)
+    {
+        if (!dir.Exists) return;
+
+        foreach (var file in dir.GetFiles())
+        {
+            try { file.Delete(); }
+            catch (Exception ex) { Log.Warn($"[{logTag}] Failed to delete {file.Name}: {ex.Message}"); }
+        }
     }
 
     public void RemoveTrackCache(string trackId)
@@ -956,12 +905,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     /// <summary>
     /// Проверяет целостность complete-кэша.
     /// </summary>
-    /// <remarks>
-    /// <para>Если файл физически валиден (<c>Length &gt;= TotalSize</c>), но runtime range-state
-    /// отсутствует (например, после миграции схемы или сбоя), выполняет self-heal
-    /// вместо деструктивного удаления.</para>
-    /// <para>Удаление выполняется только при реальном усечении файла на диске.</para>
-    /// </remarks>
     private bool EnsureCacheFileIntegrity(AudioCacheEntry entry)
     {
         if (!entry.IsComplete) return false;
@@ -970,36 +913,36 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
         try
         {
-            var fi = new FileInfo(filePath);
-
-            if (!fi.Exists)
+            if (!IsFilePhysicallyComplete(filePath, entry.TotalSize, out long actualLength))
             {
+                if (actualLength == 0)
+                {
+                    // Файл не существует
+                    InvalidateCompleteEntry(entry);
+                    return false;
+                }
+
+                // Файл усечён
+                Log.Warn($"[AudioCache] ⚠ Truncated cache file: {entry.CacheKey} " +
+                         $"(disk={actualLength / 1024}KB, expected={entry.TotalSize / 1024}KB)");
                 InvalidateCompleteEntry(entry);
+
+                try { File.Delete(filePath); }
+                catch (Exception ex) { Log.Warn($"[AudioCache] Failed to delete truncated cache file: {ex.Message}"); }
+
                 return false;
             }
 
-            if (fi.Length >= entry.TotalSize)
+            // Файл физически валиден — self-heal range-state при необходимости
+            if (entry.DownloadedBytes < entry.TotalSize && entry.TotalSize > 0)
             {
-                if (entry.DownloadedBytes < entry.TotalSize && entry.TotalSize > 0)
-                {
-                    entry.MarkFullyDownloaded();
-                    entry.ActualFileSize = fi.Length;
-                    Log.Info($"[AudioCache] Self-healed integrity: {entry.CacheKey}");
-                    _ = SaveIndexAsync();
-                }
-
-                return true;
+                entry.MarkFullyDownloaded();
+                entry.ActualFileSize = actualLength;
+                Log.Info($"[AudioCache] Self-healed integrity: {entry.CacheKey}");
+                _ = SaveIndexAsync();
             }
 
-            Log.Warn($"[AudioCache] ⚠ Truncated cache file: {entry.CacheKey} " +
-                     $"(disk={fi.Length / 1024}KB, expected={entry.TotalSize / 1024}KB)");
-
-            InvalidateCompleteEntry(entry);
-
-            try { fi.Delete(); }
-            catch (Exception ex) { Log.Warn($"[AudioCache] Failed to delete truncated cache file: {ex.Message}"); }
-
-            return false;
+            return true;
         }
         catch (Exception ex)
         {
@@ -1030,9 +973,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     /// <summary>
     /// Инвалидирует диапазон байт для лучшего доступного кэша указанного трека.
     /// </summary>
-    /// <param name="trackId">Идентификатор трека.</param>
-    /// <param name="offset">Абсолютное смещение диапазона в байтах.</param>
-    /// <param name="length">Длина диапазона в байтах.</param>
     public void InvalidateRangeByTrackId(string trackId, long offset, int length)
     {
         if (string.IsNullOrEmpty(trackId) || length <= 0) return;
@@ -1125,6 +1065,28 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
         }
     }
 
+    /// <summary>
+    /// Проверяет, что файл существует и его размер не меньше ожидаемого.
+    /// </summary>
+    /// <param name="filePath">Путь к файлу.</param>
+    /// <param name="minSize">Минимально ожидаемый размер в байтах.</param>
+    /// <param name="fileLength">Фактическая длина файла на диске; 0 если не существует.</param>
+    /// <returns><c>true</c> если файл существует и <c>Length &gt;= minSize</c>.</returns>
+    private static bool IsFilePhysicallyComplete(string filePath, long minSize, out long fileLength)
+    {
+        try
+        {
+            var fi = new FileInfo(filePath);
+            fileLength = fi.Exists ? fi.Length : 0;
+            return fi.Exists && minSize > 0 && fi.Length >= minSize;
+        }
+        catch
+        {
+            fileLength = 0;
+            return false;
+        }
+    }
+
     private void LoadIndex()
     {
         var indexPath = Path.Combine(_cacheDirectory, CacheMetadataFileName);
@@ -1169,7 +1131,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
                 if (needsMigration)
                     MigrateEntry(entry, filePath, ref migratedComplete, ref droppedPartial);
 
-                // Инвалидация legacy normalization metadata ДО RestoreAfterLoad/добавления в _entries
                 if (needsLufsMigration)
                 {
                     entry.IntegratedLufs = null;
@@ -1178,22 +1139,19 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
                 entry.RestoreAfterLoad();
 
+                // Self-heal: complete flag присутствует, но range-state пуст
                 if (entry.IsComplete && entry.DownloadedBytes < entry.TotalSize && entry.TotalSize > 0)
                 {
-                    try
+                    if (IsFilePhysicallyComplete(filePath, entry.TotalSize, out long len))
                     {
-                        var fi = new FileInfo(filePath);
-                        if (fi.Exists && fi.Length >= entry.TotalSize)
-                        {
-                            entry.MarkFullyDownloaded();
-                            entry.ActualFileSize = fi.Length;
-                            migratedComplete++;
-                            Log.Debug($"[AudioCache] Self-healed complete entry: {entry.CacheKey}");
-                        }
+                        entry.MarkFullyDownloaded();
+                        entry.ActualFileSize = len;
+                        migratedComplete++;
+                        Log.Debug($"[AudioCache] Self-healed complete entry: {entry.CacheKey}");
                     }
-                    catch (Exception ex)
+                    else if (len == 0)
                     {
-                        Log.Warn($"[AudioCache] Self-heal I/O error for {entry.CacheKey}: {ex.Message}");
+                        Log.Warn($"[AudioCache] Self-heal I/O error or missing file for {entry.CacheKey}");
                     }
                 }
 
@@ -1221,12 +1179,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     /// <summary>
     /// Мигрирует запись со старой chunk-based схемы на текущую range-based.
     /// </summary>
-    /// <remarks>
-    /// <para><b>Complete без range-state:</b> восстанавливается по физическому файлу.
-    /// Если файл на диске <c>&gt;= TotalSize</c>, range-state генерируется как <c>[0..TotalSize)</c>.</para>
-    /// <para><b>Partial без range-state:</b> coverage сбрасывается. Файл сохраняется на диске
-    /// для возможной перезаписи при повторном кэшировании.</para>
-    /// </remarks>
     private static void MigrateEntry(
         AudioCacheEntry entry,
         string filePath,
@@ -1240,23 +1192,13 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
         if (entry.IsComplete && !hasRangeState)
         {
-            try
+            if (IsFilePhysicallyComplete(filePath, entry.TotalSize, out long len))
             {
-                var fi = new FileInfo(filePath);
-                if (fi.Exists && fi.Length >= entry.TotalSize && entry.TotalSize > 0)
-                {
-                    entry.MarkFullyDownloaded();
-                    entry.ActualFileSize = fi.Length;
-                    migratedComplete++;
-                }
-                else
-                {
-                    entry.IsComplete = false;
-                    entry.CompletedAt = null;
-                    droppedPartial++;
-                }
+                entry.MarkFullyDownloaded();
+                entry.ActualFileSize = len;
+                migratedComplete++;
             }
-            catch
+            else
             {
                 entry.IsComplete = false;
                 entry.CompletedAt = null;
@@ -1270,6 +1212,28 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
         }
     }
 
+    /// <summary>
+    /// Строит JSON индекса кэша из текущего состояния _entries.
+    /// </summary>
+    /// <remarks>
+    /// Устраняет дублирование между <see cref="SaveIndexAsync"/> и <see cref="SaveIndexSync"/>.
+    /// </remarks>
+    private string BuildIndexJson()
+    {
+        var entries = _entries.Values.ToList();
+
+        for (int i = 0; i < entries.Count; i++)
+            entries[i].PrepareForSave();
+
+        var envelope = new AudioCacheIndexEnvelope
+        {
+            SchemaVersion = CurrentSchemaVersion,
+            Entries = entries
+        };
+
+        return JsonSerializer.Serialize(envelope, AppJsonContext.Default.AudioCacheIndexEnvelope);
+    }
+
     private async Task SaveIndexAsync()
     {
         if (_disposed) return;
@@ -1277,23 +1241,8 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
         try
         {
+            var json = BuildIndexJson();
             var indexPath = Path.Combine(_cacheDirectory, CacheMetadataFileName);
-            var entries = _entries.Values.ToList();
-
-            for (int i = 0; i < entries.Count; i++)
-                entries[i].PrepareForSave();
-
-            var envelope = new AudioCacheIndexEnvelope
-            {
-                SchemaVersion = CurrentSchemaVersion,
-                Entries = entries
-            };
-
-            // Используем тот же source-generated контекст (camelCase),
-            // что и LoadIndex, чтобы JSON корректно десериализовался при следующем старте.
-            string json = JsonSerializer.Serialize(
-                envelope, AppJsonContext.Default.AudioCacheIndexEnvelope);
-
             await File.WriteAllTextAsync(indexPath, json).ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -1307,9 +1256,7 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
-    /// Синхронно сохраняет индекс кэша.
-    /// Используется только в shutdown-path, чтобы не терять metadata/gain
-    /// при sync dispose приложения.
+    /// Синхронно сохраняет индекс кэша. Используется только в shutdown-path.
     /// </summary>
     private void SaveIndexSync()
     {
@@ -1318,22 +1265,8 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
         try
         {
+            var json = BuildIndexJson();
             var indexPath = Path.Combine(_cacheDirectory, CacheMetadataFileName);
-            var entries = _entries.Values.ToList();
-
-            for (int i = 0; i < entries.Count; i++)
-                entries[i].PrepareForSave();
-
-            var envelope = new AudioCacheIndexEnvelope
-            {
-                SchemaVersion = CurrentSchemaVersion,
-                Entries = entries
-            };
-
-            // Тот же source-generated контекст (camelCase), что и LoadIndex.
-            string json = JsonSerializer.Serialize(
-                envelope, AppJsonContext.Default.AudioCacheIndexEnvelope);
-
             File.WriteAllText(indexPath, json);
         }
         catch (Exception ex)
@@ -1417,15 +1350,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     /// Владеющая запись файлового дескриптора cache-файла.
     /// Обеспечивает lease-based ownership и in-flight I/O tracking.
     /// </summary>
-    /// <remarks>
-    /// <para><b>Инварианты:</b></para>
-    /// <list type="bullet">
-    ///   <item>Handle открывается лениво при первом I/O запросе через <see cref="GetOrOpen"/>.</item>
-    ///   <item>Handle закрывается автоматически при quiescence:
-    ///         <c>LeaseCount == 0 &amp;&amp; ActiveIoCount == 0</c>.</item>
-    ///   <item>Все мутации состояния потокобезопасны через <see cref="_lock"/>.</item>
-    /// </list>
-    /// </remarks>
     private sealed class CacheFileHandle : IDisposable
     {
         private readonly string _filePath;
@@ -1437,25 +1361,19 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
         public CacheFileHandle(string filePath) => _filePath = filePath;
 
-        /// <summary>Количество активных lease.</summary>
         public int LeaseCount => Volatile.Read(ref _leaseCount);
-
-        /// <summary>Количество in-flight I/O операций.</summary>
         public int ActiveIoCount => Volatile.Read(ref _activeIoCount);
 
-        /// <summary>Handle закрыт или не открывался.</summary>
         public bool IsClosed
         {
             get { lock (_lock) return _handle is null or { IsClosed: true }; }
         }
 
-        /// <summary>Увеличивает lease counter.</summary>
         public void AddLease()
         {
             lock (_lock) _leaseCount++;
         }
 
-        /// <summary>Уменьшает lease counter. Закрывает handle при quiescence.</summary>
         public void RemoveLease()
         {
             lock (_lock)
@@ -1465,10 +1383,8 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
             }
         }
 
-        /// <summary>Регистрирует начало I/O операции.</summary>
         public void BeginIo() => Interlocked.Increment(ref _activeIoCount);
 
-        /// <summary>Регистрирует завершение I/O. Закрывает handle при quiescence.</summary>
         public void EndIo()
         {
             if (Interlocked.Decrement(ref _activeIoCount) <= 0
@@ -1478,7 +1394,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
             }
         }
 
-        /// <summary>Возвращает OS handle, лениво открывая файл при необходимости.</summary>
         public SafeFileHandle GetOrOpen(FileMode mode = FileMode.OpenOrCreate)
         {
             lock (_lock)
@@ -1496,10 +1411,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
             }
         }
 
-        /// <summary>
-        /// Принудительно закрывает handle, независимо от lease/I/O counters.
-        /// Используется при удалении файла или dispose менеджера.
-        /// </summary>
         public void ForceClose()
         {
             TaskCompletionSource? waiter;
@@ -1517,9 +1428,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
             waiter?.TrySetResult();
         }
 
-        /// <summary>
-        /// Ожидает завершения всех I/O операций. Используется на dispose path.
-        /// </summary>
         public Task WaitForQuiescenceAsync(int timeoutMs)
         {
             lock (_lock)
@@ -1533,7 +1441,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
             return _quiescenceWaiter.Task.WaitAsync(TimeSpan.FromMilliseconds(timeoutMs));
         }
 
-        /// <summary>Проверяет quiescence и закрывает handle. Вызывается под lock.</summary>
         private void TryCloseIfQuiescent()
         {
             if (_leaseCount > 0 || _activeIoCount > 0) return;
@@ -1550,451 +1457,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
             waiter?.TrySetResult();
         }
 
-        /// <inheritdoc/>
-        public void Dispose()
-        {
-            ForceClose();
-        }
-    }
-}
-
-/// <summary>
-/// Метаданные range-based кэша одного аудиопотока.
-/// </summary>
-public sealed class AudioCacheEntry
-{
-    /// <summary>Уникальный ключ кэша.</summary>
-    public string CacheKey { get; init; } = "";
-
-    /// <summary>Идентификатор трека.</summary>
-    public string TrackId { get; init; } = "";
-
-    /// <summary>Исходный URL.</summary>
-    public string OriginalUrl { get; set; } = "";
-
-    /// <summary>Полный размер контента в байтах.</summary>
-    public long TotalSize { get; set; }
-
-    /// <summary>Формат аудио-контейнера.</summary>
-    public AudioFormat Format { get; init; }
-
-    /// <summary>Аудио-кодек.</summary>
-    public AudioCodec Codec { get; set; }
-
-    /// <summary>Реальный битрейт в kbps.</summary>
-    public int Bitrate { get; set; }
-
-    /// <summary>Длительность трека в миллисекундах.</summary>
-    public long DurationMs { get; set; } = -1;
-
-    /// <summary>
-    /// Выравнивание диапазонов, использованное этим кэшем.
-    /// </summary>
-    public int AlignmentBytes { get; set; }
-
-    /// <summary>Дата и время создания записи.</summary>
-    public DateTime CreatedAt { get; init; }
-
-    /// <summary>Дата и время последнего обращения.</summary>
-    public DateTime LastAccessedAt { get; set; }
-
-    /// <summary>Дата и время полного завершения кэширования.</summary>
-    public DateTime? CompletedAt { get; set; }
-
-    /// <summary>Флаг полной готовности локального кэша.</summary>
-    public bool IsComplete { get; set; }
-
-    /// <summary>Физический размер файла кэша на диске.</summary>
-    public long ActualFileSize { get; set; }
-
-    /// <summary>
-    /// Новое canonical-поле integrated loudness трека в LUFS.
-    /// </summary>
-    public float? IntegratedLufs { get; set; }
-
-    /// <summary>
-    /// Источник значения <see cref="IntegratedLufs"/>.
-    /// </summary>
-    public int IntegratedLufsSource { get; set; }
-
-    /// <summary>
-    /// Сериализуемые диапазоны локально скачанных данных.
-    /// </summary>
-    public List<SerializedDownloadedRange>? DownloadedRangesData { get; set; }
-
-    private long _downloadedBytes;
-
-    [JsonIgnore]
-    private List<CacheByteRange>? _downloadedRanges;
-
-    [JsonIgnore]
-    private readonly Lock _rangesLock = new();
-
-    [JsonIgnore]
-    private ConcurrentDictionary<long, byte>? _corruptedOfflineRanges;
-
-    /// <summary>Точное количество байт, доступных локально.</summary>
-    [JsonIgnore]
-    public long DownloadedBytes => Volatile.Read(ref _downloadedBytes);
-
-    /// <summary>Прогресс загрузки в процентах.</summary>
-    [JsonIgnore]
-    public double DownloadProgress =>
-        TotalSize <= 0 ? 0 : Math.Min(100.0, (double)DownloadedBytes / TotalSize * 100.0);
-
-    /// <summary>
-    /// Проверяет, полностью ли покрыт диапазон <c>[offset, offset + length)</c>.
-    /// </summary>
-    public bool IsRangeDownloaded(long offset, long length)
-    {
-        if (length <= 0) return true;
-        if (!NormalizeRange(offset, length, out long start, out long endExclusive))
-            return false;
-
-        lock (_rangesLock)
-        {
-            if (_downloadedRanges is not { Count: > 0 })
-                return false;
-
-            for (int i = 0; i < _downloadedRanges.Count; i++)
-            {
-                var current = _downloadedRanges[i];
-
-                if (current.Start > start)
-                    break;
-
-                if (current.EndExclusive <= start)
-                    continue;
-
-                return current.Start <= start && current.EndExclusive >= endExclusive;
-            }
-
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// Помечает диапазон байт загруженным.
-    /// </summary>
-    public void MarkRangeDownloaded(long offset, long length)
-    {
-        if (!NormalizeRange(offset, length, out long start, out long endExclusive))
-            return;
-
-        long addedBytes;
-
-        lock (_rangesLock)
-        {
-            _downloadedRanges ??= new List<CacheByteRange>(4);
-
-            int insertIndex = 0;
-            while (insertIndex < _downloadedRanges.Count
-                   && _downloadedRanges[insertIndex].EndExclusive < start)
-            {
-                insertIndex++;
-            }
-
-            long mergedStart = start;
-            long mergedEnd = endExclusive;
-            long overlapBytes = 0;
-            int removeStart = insertIndex;
-
-            while (insertIndex < _downloadedRanges.Count
-                   && _downloadedRanges[insertIndex].Start <= mergedEnd)
-            {
-                var current = _downloadedRanges[insertIndex];
-
-                long overlapStart = Math.Max(start, current.Start);
-                long overlapEnd = Math.Min(endExclusive, current.EndExclusive);
-                if (overlapStart < overlapEnd)
-                    overlapBytes += overlapEnd - overlapStart;
-
-                if (current.Start < mergedStart)
-                    mergedStart = current.Start;
-
-                if (current.EndExclusive > mergedEnd)
-                    mergedEnd = current.EndExclusive;
-
-                insertIndex++;
-            }
-
-            int removeCount = insertIndex - removeStart;
-            if (removeCount > 0)
-                _downloadedRanges.RemoveRange(removeStart, removeCount);
-
-            _downloadedRanges.Insert(removeStart, new CacheByteRange(mergedStart, mergedEnd));
-            addedBytes = endExclusive - start - overlapBytes;
-        }
-
-        if (addedBytes > 0)
-            Interlocked.Add(ref _downloadedBytes, addedBytes);
-    }
-
-    /// <summary>
-    /// Инвалидирует диапазон байт.
-    /// </summary>
-    public void InvalidateRange(long offset, long length)
-    {
-        if (!NormalizeRange(offset, length, out long start, out long endExclusive))
-            return;
-
-        long removedBytes;
-
-        lock (_rangesLock)
-        {
-            if (_downloadedRanges is not { Count: > 0 })
-                return;
-
-            var updated = new List<CacheByteRange>(_downloadedRanges.Count + 1);
-            removedBytes = 0;
-
-            for (int i = 0; i < _downloadedRanges.Count; i++)
-            {
-                var current = _downloadedRanges[i];
-
-                if (current.EndExclusive <= start || current.Start >= endExclusive)
-                {
-                    updated.Add(current);
-                    continue;
-                }
-
-                long overlapStart = Math.Max(current.Start, start);
-                long overlapEnd = Math.Min(current.EndExclusive, endExclusive);
-                if (overlapStart < overlapEnd)
-                    removedBytes += overlapEnd - overlapStart;
-
-                if (current.Start < start)
-                    updated.Add(new CacheByteRange(current.Start, start));
-
-                if (current.EndExclusive > endExclusive)
-                    updated.Add(new CacheByteRange(endExclusive, current.EndExclusive));
-            }
-
-            _downloadedRanges = updated.Count == 0 ? null : updated;
-        }
-
-        if (removedBytes > 0)
-            Interlocked.Add(ref _downloadedBytes, -removedBytes);
-    }
-
-    /// <summary>
-    /// Сбрасывает все локально скачанные диапазоны.
-    /// </summary>
-    public void ResetDownloadedRanges()
-    {
-        lock (_rangesLock)
-            _downloadedRanges = null;
-
-        DownloadedRangesData = null;
-        Volatile.Write(ref _downloadedBytes, 0);
-    }
-
-    /// <summary>
-    /// Помечает весь файл полностью скачанным.
-    /// </summary>
-    public void MarkFullyDownloaded()
-    {
-        lock (_rangesLock)
-        {
-            _downloadedRanges = TotalSize > 0
-                ? new List<CacheByteRange>(1) { new CacheByteRange(0, TotalSize) }
-                : null;
-        }
-
-        DownloadedRangesData = TotalSize > 0
-            ? new List<SerializedDownloadedRange>(1) { new() { Start = 0, EndExclusive = TotalSize } }
-            : null;
-
-        Volatile.Write(ref _downloadedBytes, Math.Max(0, TotalSize));
-    }
-
-    /// <summary>
-    /// Пытается вернуть непрерывный диапазон, содержащий указанную позицию.
-    /// </summary>
-    internal bool TryGetContainingRange(long offset, out long start, out long endExclusive)
-    {
-        if (offset < 0 || offset >= TotalSize)
-        {
-            start = 0;
-            endExclusive = 0;
-            return false;
-        }
-
-        lock (_rangesLock)
-        {
-            if (_downloadedRanges is not { Count: > 0 })
-            {
-                start = 0;
-                endExclusive = 0;
-                return false;
-            }
-
-            for (int i = 0; i < _downloadedRanges.Count; i++)
-            {
-                var current = _downloadedRanges[i];
-
-                if (current.Start > offset)
-                    break;
-
-                if (current.EndExclusive <= offset)
-                    continue;
-
-                start = current.Start;
-                endExclusive = current.EndExclusive;
-                return true;
-            }
-        }
-
-        start = 0;
-        endExclusive = 0;
-        return false;
-    }
-
-    /// <summary>
-    /// Возвращает количество непрерывно доступных байт вперёд от позиции.
-    /// </summary>
-    public long GetContiguousDownloadedBytesFrom(long offset)
-    {
-        return TryGetContainingRange(offset, out _, out long endExclusive)
-            ? endExclusive - offset
-            : 0;
-    }
-
-    /// <summary>
-    /// Возвращает snapshot скачанных диапазонов.
-    /// </summary>
-    internal CacheByteRange[] GetDownloadedRangesSnapshot()
-    {
-        lock (_rangesLock)
-        {
-            if (_downloadedRanges is not { Count: > 0 })
-                return [];
-
-            return [.. _downloadedRanges];
-        }
-    }
-
-    /// <summary>
-    /// Помечает выровненный диапазон как повреждённый в текущей оффлайн-сессии.
-    /// </summary>
-    public void MarkRangeCorruptedOffline(long alignedStart)
-    {
-        _corruptedOfflineRanges ??= new ConcurrentDictionary<long, byte>();
-        _corruptedOfflineRanges.TryAdd(alignedStart, 1);
-    }
-
-    /// <summary>
-    /// Проверяет, был ли выровненный диапазон помечен как повреждённый в оффлайне.
-    /// </summary>
-    public bool IsRangeCorruptedOffline(long alignedStart) =>
-        _corruptedOfflineRanges != null && _corruptedOfflineRanges.ContainsKey(alignedStart);
-
-    /// <summary>
-    /// Подготавливает сериализуемое состояние перед сохранением индекса.
-    /// </summary>
-    public void PrepareForSave()
-    {
-        lock (_rangesLock)
-        {
-            if (_downloadedRanges is not { Count: > 0 })
-            {
-                DownloadedRangesData = null;
-                return;
-            }
-
-            var data = new List<SerializedDownloadedRange>(_downloadedRanges.Count);
-            for (int i = 0; i < _downloadedRanges.Count; i++)
-            {
-                data.Add(new SerializedDownloadedRange
-                {
-                    Start = _downloadedRanges[i].Start,
-                    EndExclusive = _downloadedRanges[i].EndExclusive
-                });
-            }
-
-            DownloadedRangesData = data;
-        }
-    }
-
-    /// <summary>
-    /// Восстанавливает runtime-состояние после загрузки из JSON.
-    /// </summary>
-    public void RestoreAfterLoad()
-    {
-        lock (_rangesLock)
-            _downloadedRanges = null;
-
-        Volatile.Write(ref _downloadedBytes, 0);
-
-        if (DownloadedRangesData is not { Count: > 0 })
-            return;
-
-        for (int i = 0; i < DownloadedRangesData.Count; i++)
-        {
-            var range = DownloadedRangesData[i];
-            MarkRangeDownloaded(range.Start, range.EndExclusive - range.Start);
-        }
-    }
-
-    private bool NormalizeRange(long offset, long length, out long start, out long endExclusive)
-    {
-        if (length <= 0 || offset < 0 || offset >= TotalSize)
-        {
-            start = 0;
-            endExclusive = 0;
-            return false;
-        }
-
-        start = offset;
-        endExclusive = offset + length;
-
-        if (endExclusive <= start)
-        {
-            endExclusive = 0;
-            start = 0;
-            return false;
-        }
-
-        if (endExclusive > TotalSize)
-            endExclusive = TotalSize;
-
-        return endExclusive > start;
-    }
-}
-
-/// <summary>
-/// Сериализуемый диапазон локально скачанных данных.
-/// </summary>
-public sealed class SerializedDownloadedRange
-{
-    /// <summary>Начало диапазона включительно.</summary>
-    public long Start { get; set; }
-
-    /// <summary>Конец диапазона исключительно.</summary>
-    public long EndExclusive { get; set; }
-}
-
-internal readonly record struct CacheByteRange(long Start, long EndExclusive);
-
-public readonly struct CacheStats
-{
-    public int TotalEntries { get; init; }
-    public int CompleteEntries { get; init; }
-    public int PartialEntries { get; init; }
-    public long TotalSizeBytes { get; init; }
-    public long MaxSizeBytes { get; init; }
-
-    public double UsagePercent =>
-        MaxSizeBytes == 0 ? 0 : (double)TotalSizeBytes / MaxSizeBytes * 100;
-
-    public string TotalSizeFormatted => FormatSize(TotalSizeBytes);
-    public string MaxSizeFormatted => FormatSize(MaxSizeBytes);
-
-    private static string FormatSize(long bytes)
-    {
-        if (bytes < 1024) return $"{bytes} B";
-        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
-        if (bytes < 1024L * 1024 * 1024) return $"{bytes / 1024.0 / 1024.0:F1} MB";
-        return $"{bytes / 1024.0 / 1024.0 / 1024.0:F2} GB";
+        public void Dispose() => ForceClose();
     }
 }

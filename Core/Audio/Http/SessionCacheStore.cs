@@ -167,14 +167,14 @@ internal static class SessionCacheStore
                 EvictExpiredMustHoldLock();
             }
 
-            int totalVariants = 0;
+            int count, variants;
             lock (_lock)
             {
-                for (int i = 0; i < _data.Manifests.Count; i++)
-                    totalVariants += _data.Manifests[i].Variants.Count;
+                count = _data.Manifests.Count;
+                variants = CountTotalVariants();
             }
 
-            Log.Debug($"[SessionCache] Loaded {_data.Manifests.Count} manifest(s), {totalVariants} variant(s)");
+            Log.Debug($"[SessionCache] Loaded {count} manifest(s), {variants} variant(s)");
         }
         catch (Exception ex)
         {
@@ -202,28 +202,25 @@ internal static class SessionCacheStore
 
         try
         {
-            string json;
-            // Сериализуем вне I/O лока, чтобы не держать файловый лок дольше нужного
-            json = JsonSerializer.Serialize(
+            string json = JsonSerializer.Serialize(
                 snapshot,
                 AppJsonContext.DefaultCompact.SessionCacheEnvelope);
 
-            // Эксклюзивный лок только на работу с файловой системой
             lock (_saveIoLock)
             {
                 File.WriteAllText(G.FilePath.SessionCache, json);
             }
 
-            int totalVariants = 0;
+            int variants = 0;
             for (int i = 0; i < snapshot.Manifests.Count; i++)
-                totalVariants += snapshot.Manifests[i].Variants.Count;
+                variants += snapshot.Manifests[i].Variants.Count;
 
-            Log.Debug($"[SessionCache] Saved {snapshot.Manifests.Count} manifest(s), {totalVariants} variant(s)");
+            Log.Debug($"[SessionCache] Saved {snapshot.Manifests.Count} manifest(s), {variants} variant(s)");
         }
         catch (Exception ex)
         {
             Log.Warn($"[SessionCache] Save failed: {ex.Message}");
-            lock (_lock) { _dirty = true; } // Возвращаем флаг, если запись сорвалась
+            lock (_lock) { _dirty = true; }
         }
     }
 
@@ -416,6 +413,46 @@ internal static class SessionCacheStore
 
     // --- Section: Private Helpers ---
 
+    /// <summary>
+    /// Возвращает индекс записи по trackId. Вызывается под lock.
+    /// </summary>
+    /// <returns>Индекс или -1 если не найдено.</returns>
+    private static int FindIndexMustHoldLock(string trackId)
+    {
+        for (int i = 0; i < _data.Manifests.Count; i++)
+        {
+            if (string.Equals(_data.Manifests[i].TrackId, trackId, StringComparison.Ordinal))
+                return i;
+        }
+        return -1;
+    }
+
+    private static TrackManifestEntry? FindMustHoldLock(string trackId)
+    {
+        int idx = FindIndexMustHoldLock(trackId);
+        return idx >= 0 ? _data.Manifests[idx] : null;
+    }
+
+    private static void DropMustHoldLock(string trackId)
+    {
+        int idx = FindIndexMustHoldLock(trackId);
+        if (idx < 0) return;
+
+        _data.Manifests.RemoveAt(idx);
+        _dirty = true;
+    }
+
+    /// <summary>
+    /// Суммирует количество вариантов по всем манифестам. Вызывается под lock.
+    /// </summary>
+    private static int CountTotalVariants()
+    {
+        int total = 0;
+        for (int i = 0; i < _data.Manifests.Count; i++)
+            total += _data.Manifests[i].Variants.Count;
+        return total;
+    }
+
     private static int ComputeProbeTimeout(string cdnHost)
     {
         var avgTtfb = CdnHostStatsStore.GetAvgTtfbMs(cdnHost);
@@ -423,29 +460,6 @@ internal static class SessionCacheStore
             return DefaultProbeTimeoutMs;
 
         return Math.Clamp((int)(avgTtfb * ProbeTtfbMultiplier), MinProbeTimeoutMs, MaxProbeTimeoutMs);
-    }
-
-    private static TrackManifestEntry? FindMustHoldLock(string trackId)
-    {
-        for (int i = 0; i < _data.Manifests.Count; i++)
-        {
-            if (string.Equals(_data.Manifests[i].TrackId, trackId, StringComparison.Ordinal))
-                return _data.Manifests[i];
-        }
-        return null;
-    }
-
-    private static void DropMustHoldLock(string trackId)
-    {
-        for (int i = _data.Manifests.Count - 1; i >= 0; i--)
-        {
-            if (string.Equals(_data.Manifests[i].TrackId, trackId, StringComparison.Ordinal))
-            {
-                _data.Manifests.RemoveAt(i);
-                _dirty = true;
-                return;
-            }
-        }
     }
 
     private static void EvictLeastRecentlyUsedMustHoldLock()

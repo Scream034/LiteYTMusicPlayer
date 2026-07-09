@@ -26,27 +26,10 @@ public sealed class AudioPipeline : IAsyncDisposable
     private const int PrematureEndToleranceMs = 2_000;
 
     /// <summary>Максимальная длительность isolated pre-scan в секундах.</summary>
-
     private const float IsolatedScanMaxSeconds = 30f;
 
     /// <summary>Минимум секунд аудио для адекватного EBU R128 pre-scan (±1-2 LU).</summary>
     private const float MinPreScanSeconds = 10f;
-
-    /// <summary>Decimation для Opus — Concentus.Native достаточно быстр при 5.</summary>
-    private const int ScanDecimationFactorOpus = 5;
-
-    /// <summary>Decimation для AAC — SharpJaad медленнее, берём 8.</summary>
-    private const int ScanDecimationFactorAac = 8;
-
-    /// <summary>Opus @ 48kHz: 20ms фрейм = 960 samples.</summary>
-    private const int OpusNominalSamplesPerFrame = 960;
-
-    /// <summary>AAC @ 44100Hz: ~23ms фрейм = 1024 samples.</summary>
-    private const int AacNominalSamplesPerFrame = 1024;
-
-    private const double LufsOffset = -0.691;
-    private const double AbsoluteGateThresholdLufs = -70.0;
-    private const double GatingBlockSeconds = 0.4;
 
     #endregion
 
@@ -413,15 +396,21 @@ public sealed class AudioPipeline : IAsyncDisposable
        CancellationToken ct)
     {
         int retryCount = 0;
+        int requiredSpace = _decoder.MaxFrameSize * _decoder.Channels;
 
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                if (_pcmBuffer.Available < _decoder.MaxFrameSize * _decoder.Channels)
+                // Быстрый путь: проверяем место по кэшированному Tail, не дергая шину памяти
+                if (_pcmBuffer.ProducerCachedAvailable < requiredSpace)
                 {
-                    await Task.Delay(BufferFullDelayMs, ct).ConfigureAwait(false);
-                    continue;
+                    // Медленный путь: жесткая синхронизация (внутри обновит кэш, если Tail сдвинулся)
+                    if (_pcmBuffer.Available < requiredSpace)
+                    {
+                        await Task.Delay(BufferFullDelayMs, ct).ConfigureAwait(false);
+                        continue;
+                    }
                 }
 
                 AudioFrame? frame;
@@ -607,8 +596,8 @@ public sealed class AudioPipeline : IAsyncDisposable
     {
         int skipFrames = GetSkipFramesAfterSeek(_source.Codec);
 
-        Interlocked.Exchange(ref _skipFramesCounter, skipFrames);
-        Interlocked.Exchange(ref _decoderResetNeeded, skipFrames > 0 ? 1 : 0);
+        Volatile.Write(ref _skipFramesCounter, skipFrames);
+        Volatile.Write(ref _decoderResetNeeded, skipFrames > 0 ? 1 : 0);
         Volatile.Write(ref _seekTargetMs, targetMs);
     }
 
@@ -748,16 +737,17 @@ public sealed class AudioPipeline : IAsyncDisposable
     }
 
     private async Task RunPreScanForFileAsync(
-        string filePath, AudioCodec codec, CancellationToken ct,
-        float scanMaxSeconds = IsolatedScanMaxSeconds)
+     string filePath, AudioCodec codec, CancellationToken ct,
+     float scanMaxSeconds = IsolatedScanMaxSeconds)
     {
         try
         {
-            var (integratedLufs, rawGain) = await RunIsolatedPreScanAsync(
+            var (integratedLufs, rawGain) = await IsolatedPreScanHelper.RunAsync(
                 filePath, codec,
                 _analyzer.CurrentConfig.TargetLufs,
                 _analyzer.CurrentConfig.MaxGain,
-                ct, scanMaxSeconds).ConfigureAwait(false);
+                scanMaxSeconds,
+                ct).ConfigureAwait(false);
 
             if (float.IsFinite(integratedLufs))
                 _analyzer.NotifyIntegratedLufs(integratedLufs);
@@ -775,231 +765,8 @@ public sealed class AudioPipeline : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Выполняет EBU R128 pre-scan через полностью изолированный pipeline.
-    /// </summary>
-    /// <remarks>
-    /// Создаёт и уничтожает собственные FileStream, IContainerParser и IAudioDecoder.
-    /// Shared <c>_source</c>, <c>_decoder</c> и <c>_decodeBuffer</c> не затрагиваются.
-    /// <c>SeekAsync(0)</c> после завершения не нужен.
-    /// <para>Decode buffer и K-weight filter buffer арендуются из <see cref="ArrayPool{T}.Shared"/>
-    /// и возвращаются в <c>finally</c>.</para>
-    /// </remarks>
-    /// <param name="filePath">Путь к аудио файлу.</param>
-    /// <param name="codec">Кодек файла (Opus/AAC).</param>
-    /// <param name="targetLufs">Целевой уровень LUFS.</param>
-    /// <param name="maxGain">Максимальный допустимый gain.</param>
-    /// <param name="ct">Токен отмены.</param>
-    /// <returns>Пара (integratedLufs, rawGain). rawGain = 1.0f если scan не дал результата.</returns>
-    private static async Task<(float IntegratedLufs, float RawGain)> RunIsolatedPreScanAsync(
-     string filePath,
-     AudioCodec codec,
-     float targetLufs,
-     float maxGain,
-     CancellationToken ct,
-     float scanMaxSeconds = IsolatedScanMaxSeconds)
-    {
-        FileStream? fs = null;
-        IContainerParser? parser = null;
-        IAudioDecoder? decoder = null;
-        float[]? decodeBuffer = null;
-        double[]? filteredBuffer = null;
-
-        try
-        {
-            fs = new FileStream(
-                filePath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete,
-                bufferSize: AudioConstants.CacheFileBufferSize,
-                useAsync: false);
-
-            var format = await DetectIsolatedFormatAsync(fs, ct).ConfigureAwait(false);
-            if (format == AudioFormat.Unknown)
-                return (float.NaN, 1.0f);
-
-            parser = CreateIsolatedParser(format, fs);
-            if (!await parser.ParseHeadersAsync(ct).ConfigureAwait(false))
-                return (float.NaN, 1.0f);
-
-            int sampleRate = parser.SampleRate > 0 ? parser.SampleRate : AudioConstants.DefaultSampleRate;
-            int channels = parser.Channels > 0 ? parser.Channels : AudioConstants.DefaultChannels;
-
-            decoder = CreateIsolatedDecoder(codec, parser, sampleRate, channels);
-
-            int maxFrames = DecoderBufferFrames * channels;
-            decodeBuffer = ArrayPool<float>.Shared.Rent(maxFrames);
-            filteredBuffer = ArrayPool<double>.Shared.Rent(maxFrames);
-
-            int decimationFactor = codec == AudioCodec.Aac
-                ? ScanDecimationFactorAac
-                : ScanDecimationFactorOpus;
-
-            int nominalSamplesPerFrame = codec == AudioCodec.Aac
-                ? AacNominalSamplesPerFrame
-                : OpusNominalSamplesPerFrame;
-
-            return await ScanFramesAsync(
-                parser, decoder, sampleRate, channels,
-                decodeBuffer, filteredBuffer,
-                targetLufs, maxGain,
-                decimationFactor, nominalSamplesPerFrame,
-                scanMaxSeconds, ct).ConfigureAwait(false);
-        }
-        finally
-        {
-            decoder?.Dispose();
-            if (parser != null) await parser.DisposeAsync().ConfigureAwait(false);
-            if (fs != null) await fs.DisposeAsync().ConfigureAwait(false);
-            if (decodeBuffer != null) ArrayPool<float>.Shared.Return(decodeBuffer);
-            if (filteredBuffer != null) ArrayPool<double>.Shared.Return(filteredBuffer);
-        }
-    }
-
-    /// <summary>
-    /// Определяет формат по magic bytes и сбрасывает позицию потока.
-    /// </summary>
-    private static async Task<AudioFormat> DetectIsolatedFormatAsync(FileStream fs, CancellationToken ct)
-    {
-        var header = ArrayPool<byte>.Shared.Rent(AudioConstants.FormatDetectionHeaderSize);
-        try
-        {
-            int totalRead = 0;
-            while (totalRead < AudioConstants.FormatDetectionHeaderSize)
-            {
-                int read = await fs.ReadAsync(
-                    header.AsMemory(totalRead, AudioConstants.FormatDetectionHeaderSize - totalRead), ct)
-                    .ConfigureAwait(false);
-                if (read == 0) break;
-                totalRead += read;
-            }
-            fs.Position = 0;
-            return AudioSourceFactory.DetectFormatByMagic(header.AsSpan(0, totalRead));
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(header);
-        }
-    }
-
-    /// <summary>Создаёт isolated parser для указанного формата и FileStream.</summary>
-    private static IContainerParser CreateIsolatedParser(AudioFormat format, FileStream fs) => format switch
-    {
-        AudioFormat.WebM or AudioFormat.Ogg => new Parsers.WebMContainerParser(fs),
-        AudioFormat.Mp4 => new Parsers.Mp4ContainerParser(fs),
-        _ => throw new NotSupportedException($"[AudioPipeline] Isolated scan: unsupported format {format}")
-    };
-
-    /// <summary>Создаёт isolated decoder с учётом codec-specific инициализации.</summary>
-    private static IAudioDecoder CreateIsolatedDecoder(
-        AudioCodec codec,
-        IContainerParser parser,
-        int sampleRate,
-        int channels) => codec switch
-        {
-            AudioCodec.Opus => new Decoders.OpusDecoder(sampleRate, channels),
-            AudioCodec.Aac => CreateIsolatedAacDecoder(parser, sampleRate, channels),
-            _ => throw new NotSupportedException($"[AudioPipeline] Isolated scan: unsupported codec {codec}")
-        };
-
-    private static IAudioDecoder CreateIsolatedAacDecoder(IContainerParser parser, int sampleRate, int channels)
-    {
-        var dec = new Decoders.AacDecoder(sampleRate, channels);
-        if (parser.DecoderConfig != null)
-            dec.Initialize(parser.DecoderConfig);
-        return dec;
-    }
-
-    /// <summary>
-    /// Основной цикл чтения фреймов и вычисления EBU R128 integrated LUFS.
-    /// </summary>
-    private static async Task<(float IntegratedLufs, float RawGain)> ScanFramesAsync(
-        IContainerParser parser,
-        IAudioDecoder decoder,
-        int sampleRate,
-        int channels,
-        float[] decodeBuffer,
-        double[] filteredBuffer,
-        float targetLufs,
-        float maxGain,
-        int decimationFactor,
-        int nominalSamplesPerFrame,
-        float scanMaxSeconds,
-        CancellationToken ct)
-    {
-        var scanFilter = new Helpers.KWeightingFilter(sampleRate, channels);
-        var blockSumSq = new double[channels];
-        var blockPowers = new double[EbuR128Analyzer.MaxScanGatingBlocks];
-
-        int blockCount = 0;
-        int blockFrameCount = 0;
-        long totalFrames = 0;
-        long maxFrames = (long)(sampleRate * scanMaxSeconds);
-        int gatingBlockSize = (int)(sampleRate * GatingBlockSeconds);
-        int frameIndex = 0;
-
-        while (!ct.IsCancellationRequested && totalFrames < maxFrames)
-        {
-            var frame = await parser.ReadNextFrameAsync(ct).ConfigureAwait(false);
-            if (frame == null) break;
-
-            totalFrames += nominalSamplesPerFrame;
-            frameIndex++;
-
-            if (frameIndex % decimationFactor != 0)
-                continue;
-
-            scanFilter.Reset();
-
-            int decoded = decoder.Decode(frame.Value.Data.Span, decodeBuffer);
-            if (decoded <= 0) continue;
-
-            int samplesToProcess = decoded * channels;
-
-            scanFilter.ProcessBlock(
-                decodeBuffer.AsSpan(0, samplesToProcess),
-                filteredBuffer.AsSpan(0, samplesToProcess));
-
-            ref double filteredRef = ref System.Runtime.InteropServices.MemoryMarshal
-                .GetArrayDataReference(filteredBuffer);
-            ref double sumSqRef = ref System.Runtime.InteropServices.MemoryMarshal
-                .GetArrayDataReference(blockSumSq);
-
-            for (int f = 0; f < decoded; f++)
-            {
-                int offset = f * channels;
-                for (int ch = 0; ch < channels; ch++)
-                {
-                    double val = System.Runtime.CompilerServices.Unsafe.Add(ref filteredRef, offset + ch);
-                    System.Runtime.CompilerServices.Unsafe.Add(ref sumSqRef, ch) += val * val;
-                }
-
-                if (++blockFrameCount >= gatingBlockSize)
-                {
-                    double channelPowerSum = 0.0;
-                    for (int ch = 0; ch < channels; ch++)
-                        channelPowerSum += System.Runtime.CompilerServices.Unsafe.Add(ref sumSqRef, ch) / blockFrameCount;
-
-                    double blockLufs = LufsOffset + 10.0 * Math.Log10(Math.Max(channelPowerSum, 1e-20));
-
-                    if (blockLufs > AbsoluteGateThresholdLufs && blockCount < EbuR128Analyzer.MaxScanGatingBlocks)
-                        blockPowers[blockCount++] = channelPowerSum;
-
-                    Array.Clear(blockSumSq, 0, channels);
-                    blockFrameCount = 0;
-                }
-            }
-        }
-
-        float integratedLufs = EbuR128Analyzer.ComputeIntegratedLufsFromBlocks(blockPowers, blockCount);
-        float rawGain = EbuR128Analyzer.ComputeIntegratedGainFromBlocks(blockPowers, blockCount, targetLufs, maxGain);
-
-        return (integratedLufs, rawGain);
-    }
-
     public void SetDecodedSamplesPosition(long samples) =>
-        Interlocked.Exchange(ref _decodedSamples, samples);
+        Volatile.Write(ref _decodedSamples, samples);
 
     public float GetLockedNormalizationGain() => _analyzer.GetLockedGain();
 
@@ -1053,13 +820,9 @@ public sealed class AudioPipeline : IAsyncDisposable
             if (canBypassLimiter)
             {
                 if (_gainCrossfader.IsActive)
-                {
-                    ApplyGainWithCrossfade(samples, ref _gainCrossfader);
-                }
+                    SpanMathHelper.MultiplyByCrossfade(samples, ref _gainCrossfader);
                 else if (MathF.Abs(normGain - 1.0f) > 0.0001f)
-                {
-                    ApplyConstantGain(samples, normGain);
-                }
+                    SpanMathHelper.MultiplyByConstant(samples, normGain);
             }
             else
             {
@@ -1068,35 +831,6 @@ public sealed class AudioPipeline : IAsyncDisposable
         }
 
         return read / _decoder.Channels;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ApplyConstantGain(Span<float> samples, float gain)
-    {
-        int i = 0;
-        int vectorSize = Vector<float>.Count;
-
-        if (Vector.IsHardwareAccelerated && samples.Length >= vectorSize)
-        {
-            var gainVector = new Vector<float>(gain);
-            for (; i <= samples.Length - vectorSize; i += vectorSize)
-            {
-                var vector = new Vector<float>(samples.Slice(i, vectorSize));
-                (vector * gainVector).CopyTo(samples.Slice(i, vectorSize));
-            }
-        }
-
-        for (; i < samples.Length; i++)
-            samples[i] *= gain;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ApplyGainWithCrossfade(Span<float> samples, ref GainCrossfader crossfader)
-    {
-        ref float samplesRef = ref MemoryMarshal.GetReference(samples);
-        int len = samples.Length;
-        for (int i = 0; i < len; i++)
-            Unsafe.Add(ref samplesRef, i) *= crossfader.Advance();
     }
 
     #endregion
@@ -1108,7 +842,7 @@ public sealed class AudioPipeline : IAsyncDisposable
         if (_disposed || _pcmBuffer.Count >= minSamples) return true;
 
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        Interlocked.Exchange(ref _warmupTcs, tcs);
+        Volatile.Write(ref _warmupTcs, tcs);
         Volatile.Write(ref _warmupThreshold, minSamples);
 
         if (_pcmBuffer.Count >= minSamples)

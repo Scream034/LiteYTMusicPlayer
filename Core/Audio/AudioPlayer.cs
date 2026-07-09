@@ -645,10 +645,8 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
             _lifetimeCts.Token, cmd.ExternalCancellationToken);
         var ct = linkedCts.Token;
 
-        // Безопасно считываем gain из текущего пайплайна, пока он еще играет в фоне
         float previousGain = _activePipeline?.GetLockedNormalizationGain() ?? 1.0f;
 
-        // Старый пайплайн не трогаем — он бесшовно поет в фоне, пока создается новый
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -669,17 +667,12 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
 
             ct.ThrowIfCancellationRequested();
 
-            // ТОЧКА БЕСШОВНОЙ ПОДМЕНЫ: останавливаем UI-таймеры только сейчас
             StopTimers();
 
-            // Делаем единственный атомарный обмен пайплайнов
             var oldPipeline = Interlocked.Exchange(ref _activePipeline, pipeline);
             if (oldPipeline != null)
-            {
                 TrackAndFirePipelineDispose(oldPipeline);
-            }
 
-            // Очищаем C#-очередь, оставляя только 300мс системного буфера Windows для кроссфейда
             _sharedBackend.Flush();
             _lastRawPlayedSamples = -1;
 
@@ -690,7 +683,6 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
             pipeline.SetDeviceAvailableHandler(() => OnPipelineDeviceAvailable(pipeline, capturedSession));
             pipeline.SetStarvationHandler(() => OnPipelineStarvation(pipeline, capturedSession));
 
-            // Устанавливаем сохраненный gain в новый пайплайн
             pipeline.SetInitialNormalizationGain(previousGain);
             _options.OnPipelineConfiguring?.Invoke(pipeline, cmd.Descriptor.TrackId);
 
@@ -739,32 +731,8 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
                 return;
             }
 
-            if (pcmReady && sourceReady)
-            {
-                ResumePlaybackSequence(pipeline, startTimers: true, configurePipeline: false);
-            }
-            else
-            {
-                Log.Warn($"[AudioPlayer] Initial warmup incomplete " +
-                         $"(ring={pipeline.BufferedSamples}/{warmupPlan.PcmThresholdSamples}, " +
-                         $"ahead={GetSourceBufferedAheadMs(pipeline)}ms/{warmupPlan.SourceAheadMs}ms). " +
-                         "Staying in Buffering for deferred resume.");
-
-                pipeline.ActivateBufferingMode();
-
-                int seekGeneration = Volatile.Read(ref _seekGeneration);
-                var deferredResumeCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
-                var previousCts = Interlocked.Exchange(ref _deferredResumeCts, deferredResumeCts);
-                CancelCtsAsync(previousCts);
-
-                _ = AwaitDeferredSeekBufferAndResumeAsync(
-                    pipeline,
-                    warmupPlan.PcmThresholdSamples,
-                    warmupPlan.SourceAheadMs,
-                    cmd.SessionId,
-                    seekGeneration,
-                    deferredResumeCts);
-            }
+            ResumeOrDefer(pipeline, pcmReady, sourceReady, warmupPlan, cmd.SessionId,
+                startTimers: true, configurePipeline: false, logContext: "Initial warmup");
 
             _ = WatchPipelineLifetimeAsync(pipeline, cmd.SessionId);
         }
@@ -824,6 +792,82 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
     #region Helpers
 
     /// <summary>
+    /// Переводит pipeline в режим буферизации и запускает фоновое ожидание
+    /// перед открытием playback gate.
+    /// </summary>
+    private void LaunchDeferredResume(
+        AudioPipeline pipeline,
+        PlaybackWarmupPlan warmupPlan,
+        int sessionId)
+    {
+        pipeline.ActivateBufferingMode();
+
+        int seekGeneration = Volatile.Read(ref _seekGeneration);
+        var deferredResumeCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+        var previousCts = Interlocked.Exchange(ref _deferredResumeCts, deferredResumeCts);
+        CancelCtsAsync(previousCts);
+
+        _ = AwaitDeferredSeekBufferAndResumeAsync(
+            pipeline,
+            warmupPlan.PcmThresholdSamples,
+            warmupPlan.SourceAheadMs,
+            sessionId,
+            seekGeneration,
+            deferredResumeCts);
+    }
+
+    /// <summary>
+    /// Возобновляет playback немедленно, если буферы готовы,
+    /// или делегирует в <see cref="LaunchDeferredResume"/>.
+    /// </summary>
+    /// <remarks>
+    /// Устраняет дублирование блока «warn + deferred» из
+    /// <c>HandlePlayAsync</c>, <c>HandleDeviceRecoveryAsync</c>, <c>FastRewindInternalAsync</c>.
+    /// </remarks>
+    /// <param name="pipeline">Активный pipeline.</param>
+    /// <param name="pcmReady">PCM-порог достигнут.</param>
+    /// <param name="sourceReady">Source-ahead достаточен.</param>
+    /// <param name="warmupPlan">Параметры прогрева.</param>
+    /// <param name="sessionId">ID текущей сессии.</param>
+    /// <param name="startTimers">Запустить UI-таймеры после открытия gate.</param>
+    /// <param name="configurePipeline">Вызвать <see cref="AudioPlayerOptions.OnPipelineConfiguring"/>.</param>
+    /// <param name="trackId">TrackId для конфигурирования pipeline.</param>
+    /// <param name="logContext">Префикс контекста для предупреждения (например, "Initial warmup").</param>
+    private void ResumeOrDefer(
+        AudioPipeline pipeline,
+        bool pcmReady,
+        bool sourceReady,
+        PlaybackWarmupPlan warmupPlan,
+        int sessionId,
+        bool startTimers,
+        bool configurePipeline,
+        string? trackId = null,
+        string? logContext = null)
+    {
+        if (pcmReady && sourceReady)
+        {
+            ResumePlaybackSequence(pipeline, startTimers, configurePipeline, trackId);
+            return;
+        }
+
+        Log.Warn($"[AudioPlayer] {logContext ?? "Warmup"} incomplete " +
+                 $"(ring={pipeline.BufferedSamples}/{warmupPlan.PcmThresholdSamples}, " +
+                 $"ahead={GetSourceBufferedAheadMs(pipeline)}ms/{warmupPlan.SourceAheadMs}ms). " +
+                 "Deferred resume.");
+
+        LaunchDeferredResume(pipeline, warmupPlan, sessionId);
+    }
+
+    /// <summary>
+    /// Возвращает <c>true</c>, если pipeline-команда устарела и должна быть отброшена.
+    /// </summary>
+    /// <param name="pipeline">Pipeline команды.</param>
+    /// <param name="sessionId">Session ID команды.</param>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsPipelineCommandStale(AudioPipeline pipeline, int sessionId) =>
+        _disposed || _activePipeline != pipeline || _session.IsStale(sessionId);
+
+    /// <summary>
     /// Запускает dispose старого pipeline в фоне.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -840,13 +884,11 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
             }
         });
 
-        Interlocked.Exchange(ref _oldPipelineDisposeTask, disposeTask);
+        Volatile.Write(ref _oldPipelineDisposeTask, disposeTask);
     }
 
     /// <summary>
     /// Обрабатывает естественное завершение трека внутри actor loop.
-    /// При активном fast-replay (RepeatMode.One) выполняет rewind pipeline
-    /// без пересоздания source/decoder/file handles.
     /// </summary>
     private async Task HandleTrackEndedAsync(TrackEndedCommand cmd)
     {
@@ -886,12 +928,6 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
     /// Выполняет fast-rewind текущего pipeline в начало трека
     /// без пересоздания source, decoder и файловых дескрипторов.
     /// </summary>
-    /// <remarks>
-    /// <para>Работает для любого seekable source: <see cref="Sources.LocalFileSource"/>,
-    /// <see cref="Sources.CachingStreamSource"/> (fully/partially buffered).</para>
-    /// <para>Preload loop <see cref="Sources.CachingStreamSource"/> остаётся живым,
-    /// данные начала файла с высокой вероятностью уже в disk/RAM кэше.</para>
-    /// </remarks>
     /// <param name="pipeline">Активный pipeline для rewind.</param>
     /// <param name="sessionId">ID текущей сессии.</param>
     /// <returns><c>true</c> если rewind успешен; <c>false</c> — нужен fallback на полный restart.</returns>
@@ -954,30 +990,11 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
                 return true;
             }
 
-            if ((pcmReady && sourceReady) || pipeline.Source.IsFullyBuffered)
-            {
-                ResumePlaybackSequence(
-                    pipeline,
-                    startTimers: true,
-                    configurePipeline: false);
-            }
+            if (pipeline.Source.IsFullyBuffered)
+                ResumePlaybackSequence(pipeline, startTimers: true, configurePipeline: false);
             else
-            {
-                pipeline.ActivateBufferingMode();
-
-                int seekGeneration = Volatile.Read(ref _seekGeneration);
-                var deferredResumeCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
-                var previousCts = Interlocked.Exchange(ref _deferredResumeCts, deferredResumeCts);
-                CancelCtsAsync(previousCts);
-
-                _ = AwaitDeferredSeekBufferAndResumeAsync(
-                    pipeline,
-                    warmupPlan.PcmThresholdSamples,
-                    warmupPlan.SourceAheadMs,
-                    sessionId,
-                    seekGeneration,
-                    deferredResumeCts);
-            }
+                ResumeOrDefer(pipeline, pcmReady, sourceReady, warmupPlan, sessionId,
+                    startTimers: true, configurePipeline: false, logContext: "Fast rewind warmup");
 
             Log.Info("[AudioPlayer] Fast rewind completed (repeat-one)");
             return true;
@@ -998,7 +1015,7 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
     /// </summary>
     private Task HandleStarvationAsync(StarvationCommand cmd)
     {
-        if (_disposed || _activePipeline != cmd.Pipeline || _session.IsStale(cmd.SessionId))
+        if (IsPipelineCommandStale(cmd.Pipeline, cmd.SessionId))
             return Task.CompletedTask;
 
         if (_state != PlayerState.Playing)
@@ -1015,22 +1032,9 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
         StopTimers();
 
         SetState(PlayerState.Buffering);
-        pipeline.ActivateBufferingMode();
 
         var warmupPlan = ComputePlaybackWarmupPlan(pipeline, isSeek: false);
-        int seekGeneration = Volatile.Read(ref _seekGeneration);
-
-        var deferredResumeCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
-        var previousCts = Interlocked.Exchange(ref _deferredResumeCts, deferredResumeCts);
-        CancelCtsAsync(previousCts);
-
-        _ = AwaitDeferredSeekBufferAndResumeAsync(
-            pipeline,
-            warmupPlan.PcmThresholdSamples,
-            warmupPlan.SourceAheadMs,
-            cmd.SessionId,
-            seekGeneration,
-            deferredResumeCts);
+        LaunchDeferredResume(pipeline, warmupPlan, cmd.SessionId);
 
         return Task.CompletedTask;
     }
@@ -1051,7 +1055,7 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
     /// </summary>
     private Task HandlePlayerErrorAsync(PlayerErrorCommand cmd)
     {
-        if (_disposed || _activePipeline != cmd.Pipeline || _session.IsStale(cmd.SessionId))
+        if (IsPipelineCommandStale(cmd.Pipeline, cmd.SessionId))
             return Task.CompletedTask;
 
         if (CancellationHelper.IsCancellationLike(cmd.Error))
@@ -1121,37 +1125,17 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
     private PlaybackIntent CurrentPlaybackIntent =>
         (PlaybackIntent)Volatile.Read(ref _playbackIntent);
 
-    private Func<CancellationToken, Task<string?>>? CreateUrlAcquirer()
-    {
-        if (_options.UrlAcquireCallback == null || string.IsNullOrEmpty(_currentTrackId))
-            return null;
+    private Func<CancellationToken, Task<string?>>? CreateUrlAcquirer() =>
+        GetOrCreateUrlCallback(
+            _options.UrlAcquireCallback,
+            ref _cachedUrlAcquirer,
+            ref _cachedUrlAcquirerTrackId);
 
-        string? trackId = _currentTrackId;
-
-        if (_cachedUrlAcquirer != null && _cachedUrlAcquirerTrackId == trackId)
-            return _cachedUrlAcquirer;
-
-        var callback = _options.UrlAcquireCallback;
-        _cachedUrlAcquirerTrackId = trackId;
-        _cachedUrlAcquirer = ct => callback(trackId, ct).AsTask();
-        return _cachedUrlAcquirer;
-    }
-
-    private Func<CancellationToken, Task<string?>>? CreateUrlRefresher()
-    {
-        if (_options.UrlRefreshCallback == null || string.IsNullOrEmpty(_currentTrackId))
-            return null;
-
-        string? trackId = _currentTrackId;
-
-        if (_cachedUrlRefresher != null && _cachedUrlRefresherTrackId == trackId)
-            return _cachedUrlRefresher;
-
-        var callback = _options.UrlRefreshCallback;
-        _cachedUrlRefresherTrackId = trackId;
-        _cachedUrlRefresher = ct => callback(trackId, ct).AsTask();
-        return _cachedUrlRefresher;
-    }
+    private Func<CancellationToken, Task<string?>>? CreateUrlRefresher() =>
+        GetOrCreateUrlCallback(
+            _options.UrlRefreshCallback,
+            ref _cachedUrlRefresher,
+            ref _cachedUrlRefresherTrackId);
 
     /// <summary>
     /// Создаёт session-bound callback завершения трека.
@@ -1175,6 +1159,35 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
             if (_disposed) return;
             _commandChannel.Writer.TryWrite(new PlayerErrorCommand(sessionId, pipeline, ex));
         };
+    }
+
+    /// <summary>
+    /// Возвращает кэшированный URL callback для текущего трека или создаёт новый.
+    /// </summary>
+    /// <param name="optionCallback">Источник callback из <see cref="AudioPlayerOptions"/>.</param>
+    /// <param name="cachedCallback">Кэш delegate для текущего trackId.</param>
+    /// <param name="cachedTrackId">TrackId, для которого был создан кэш.</param>
+    /// <returns>
+    /// Обёрнутый <c>Func&lt;CancellationToken, Task&lt;string?&gt;&gt;</c>
+    /// или <c>null</c> если callback не задан или trackId пуст.
+    /// </returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private Func<CancellationToken, Task<string?>>? GetOrCreateUrlCallback(
+        Func<string, CancellationToken, ValueTask<string?>>? optionCallback,
+        ref Func<CancellationToken, Task<string?>>? cachedCallback,
+        ref string? cachedTrackId)
+    {
+        if (optionCallback == null || string.IsNullOrEmpty(_currentTrackId))
+            return null;
+
+        string trackId = _currentTrackId;
+
+        if (cachedCallback != null && cachedTrackId == trackId)
+            return cachedCallback;
+
+        cachedTrackId = trackId;
+        cachedCallback = ct => optionCallback(trackId, ct).AsTask();
+        return cachedCallback;
     }
 
     #endregion

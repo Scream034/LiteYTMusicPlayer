@@ -1045,7 +1045,7 @@ public sealed partial class CachingStreamSource : IAudioSource
             return;
 
         _currentUrl = newUrl;
-        Interlocked.Exchange(ref _consecutive403Count, 0);
+        Volatile.Write(ref _consecutive403Count, 0);
 
         _cacheEntry?.OriginalUrl = newUrl;
 

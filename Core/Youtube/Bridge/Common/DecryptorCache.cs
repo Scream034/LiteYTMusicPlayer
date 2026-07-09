@@ -49,7 +49,7 @@ public sealed class DecryptorCache
     {
         var ticks = Environment.TickCount64;
         _memory[key] = (value, ticks);
-        Interlocked.Exchange(ref _isDirty, 1);
+        Volatile.Write(ref _isDirty, 1);
 
         if (_memory.Count > _maxMemory * 0.8 && !_cleanupInProgress)
             TriggerCleanup();
@@ -69,7 +69,7 @@ public sealed class DecryptorCache
     {
         if (_memory.TryRemove(key, out _))
         {
-            Interlocked.Exchange(ref _isDirty, 1);
+            Volatile.Write(ref _isDirty, 1);
             _ = Task.Run(SaveAsync);
             return true;
         }
@@ -101,7 +101,7 @@ public sealed class DecryptorCache
 
         if (removedAny)
         {
-            Interlocked.Exchange(ref _isDirty, 1);
+            Volatile.Write(ref _isDirty, 1);
             _ = Task.Run(SaveAsync);
         }
     }
@@ -169,14 +169,14 @@ public sealed class DecryptorCache
         catch (Exception ex)
         {
             Log.Debug($"[Cache] Save failed: {ex.Message}");
-            Interlocked.Exchange(ref _isDirty, 1);
+            Volatile.Write(ref _isDirty, 1);
         }
     }
 
     public void Clear()
     {
         _memory.Clear();
-        Interlocked.Exchange(ref _isDirty, 0);
+        Volatile.Write(ref _isDirty, 0);
         try
         {
             if (File.Exists(DiskPath))
