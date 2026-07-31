@@ -71,7 +71,7 @@ public static class MosaicGenerator
         await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
         {
             using var target = RenderMosaic(bitmaps);
-            target.Save(filePath);
+            target.Save(filePath, PngBitmapEncoderOptions.Default);
         });
 
         return filePath;

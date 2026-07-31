@@ -16,6 +16,13 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
 
     private static DateTime _lastBotDetection = DateTime.MinValue;
     private static int _consecutiveFailures;
+    /// <summary>
+    /// Количество BotDetection-сбоев ANDROID_VR в текущей сессии.
+    /// Используется для пропуска клиента, стабильно блокируемого сервером,
+    /// без потери времени на roundtrip (~700 мс) при каждом force-refresh.
+    /// Сбрасывается при успешном ответе ANDROID_VR или явном <see cref="ResetBotDetectionState"/>.
+    /// </summary>
+    private static volatile int _androidVrSessionBotDetections;
     private static readonly SemaphoreSlim _requestThrottle = new(1, 1);
     private static readonly Lock _stateLock = new();
 
@@ -51,6 +58,7 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
         lock (_stateLock)
         {
             _consecutiveFailures = 0;
+            _androidVrSessionBotDetections = 0;
             _lastBotDetection = DateTime.MinValue;
             Log.Info("[VideoController] Bot detection state reset");
         }
@@ -342,12 +350,29 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
 
         foreach (var clientName in clients)
         {
+            // Пропускаем клиент, если он уже давал BotDetection в текущей сессии.
+            // Это предотвращает ~700 мс блокировку WEB_REMIX при каждом force-refresh.
+            if (string.Equals(clientName, "ANDROID_VR", StringComparison.Ordinal)
+                && _androidVrSessionBotDetections > 0)
+            {
+                Log.Debug($"[VideoController] [{videoId}] ANDROID_VR skipped — " +
+                          $"{_androidVrSessionBotDetections} BotDetection(s) in session");
+                errors.Add("ANDROID_VR: SKIPPED_BOT_DETECTION_SESSION");
+                allBotDetection = true; // счётчик уже ненулевой — флаг остаётся корректным
+                hasNonNetworkFailure = true;
+                continue;
+            }
+
             try
             {
                 var response = await GetPlayerResponseWithClientAsync(videoId, clientName, cancellationToken);
 
                 if (response.IsPlayable && HasAnyStream(response))
                 {
+                    // Успешный ответ ANDROID_VR означает, что блокировка снята
+                    if (string.Equals(clientName, "ANDROID_VR", StringComparison.Ordinal))
+                        Interlocked.Exchange(ref _androidVrSessionBotDetections, 0);
+
                     Log.Info($"[VideoController] [{videoId}] SUCCESS with {clientName}");
                     return (response, clientName);
                 }
@@ -375,8 +400,12 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
             {
                 if (ex.Reason == LoginRequiredReason.BotDetection)
                 {
+                    // --- Section: ANDROID_VR BotDetection Tracking ---
+                    if (string.Equals(clientName, "ANDROID_VR", StringComparison.Ordinal))
+                        Interlocked.Increment(ref _androidVrSessionBotDetections);
+
                     errors.Add($"{clientName}: BOT_DETECTION (LOGIN_REQUIRED)");
-                    // allBotDetection остаётся true — это IS bot detection
+                    // allBotDetection остаётся true
                 }
                 else
                 {

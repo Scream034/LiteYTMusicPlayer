@@ -10,22 +10,12 @@ using System.Diagnostics;
 using LMP.Core.Audio.Http;
 
 
-
-#if DEBUG
-using LMP.Tests;
-using LMP.Core.Diagnostics;
-#endif
-
 namespace LMP;
 
 public partial class App : Application
 {
     private SplashWindow? _splash;
     private readonly CancellationTokenSource _appLifetimeCts = new();
-
-#if DEBUG
-    private static UIHangWatchdog? _uiWatchdog;
-#endif
 
     public override void Initialize()
     {
@@ -38,25 +28,6 @@ public partial class App : Application
 
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-#if DEBUG
-            // Безопасный запуск отладчика после того, как Dispatcher UI-потока гарантированно инициализирован
-            try
-            {
-                _uiWatchdog = new UIHangWatchdog();
-                _uiWatchdog.Start();
-
-                desktop.ShutdownRequested += (_, _) =>
-                {
-                    _uiWatchdog?.Dispose();
-                };
-            }
-            catch (Exception ex)
-            {
-                Log.Warn($"[Watchdog] Failed to initialize diagnostic watchdog: {ex.Message}");
-            }
-#endif
-
-
             // Тема
             var themeManager = AppEntry.Services.GetRequiredService<ThemeManagerService>();
             themeManager.LoadAndApplyThemeOnStartup();

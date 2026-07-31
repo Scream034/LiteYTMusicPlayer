@@ -29,7 +29,7 @@ public sealed class JsDecryptionService : IDisposable
     private readonly PlayerContextManager _playerManager;
 
     private IntPtr _handle = IntPtr.Zero;
-    private string? _currentPlayerVersion;
+    private volatile string? _currentPlayerVersion;
     private volatile bool _initialized;
     private volatile bool _disposed;
 
@@ -199,6 +199,37 @@ public sealed class JsDecryptionService : IDisposable
         _initialized = false;
         _currentPlayerVersion = null;
         Log.Info("[JsDecryptionService] Invalidated — will reinitialize on next call");
+    }
+
+    /// <summary>
+    /// Вызывается при обнаружении сломанного solver (n-token → null).
+    /// Сбрасывает in-memory состояние и физически удаляет все дисковые артефакты
+    /// текущей версии плеера, форсируя полную перезагрузку base.js при следующем вызове.
+    /// </summary>
+    /// <remarks>
+    /// Метод синхронный: файловые операции выполняются немедленно, без fire-and-forget,
+    /// чтобы гарантировать отсутствие байткода до следующего <see cref="EnsureInitializedAsync"/>.
+    /// </remarks>
+    public void InvalidatePlayerContextAndBytecode()
+    {
+        var version = _currentPlayerVersion;
+
+        _initialized = false;
+        _currentPlayerVersion = null;
+
+        // Мягкий сброс RAM-контекста; ClearDiskCache выполняется отдельно,
+        // чтобы не зависеть от _current (может быть null после предыдущего InvalidateContext).
+        _playerManager.InvalidateContext();
+
+        if (!string.IsNullOrEmpty(version))
+        {
+            PlayerContext.ClearDiskCache(version);
+            Log.Warn($"[JsDecryptionService] Broken n-solver — purged all disk cache for player {version}");
+        }
+        else
+        {
+            Log.Warn("[JsDecryptionService] Broken n-solver — version unknown, RAM context cleared");
+        }
     }
 
     //  Private helpers 

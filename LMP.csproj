@@ -3,10 +3,13 @@
   <!--      ВЕРСИИ ПАКЕТОВ        -->
   <PropertyGroup Label="Package Versions">
     <!--
-      Avalonia 12.0.4 — стабильный патч-релиз (28.05.2026).
-      Включает фиксы рендерера, TextRunCache, улучшения XAML-компилятора.
+      Avalonia 12.1.1 — стабильный релиз (29.07.2026).
+      Новое: TableView, Scrollbar Context Menu, кастомный парсинг дат в CalendarDatePicker,
+      прозрачный чекерборд в ColorView. Первый релиз с SBOM (EU Cyber Resilience Act).
+      Фиксы: brush при смене выделения, RequestedThemeVariant default, text fallback itemization.
+      MicroCom.Runtime поднят до 0.11.6.
     -->
-    <AvaloniaVersion>12.0.4</AvaloniaVersion>
+    <AvaloniaVersion>12.1.1</AvaloniaVersion>
 
     <!--
       ReactiveUI.Avalonia 12.0.3 — актуальный релиз для Avalonia 12.
@@ -15,7 +18,11 @@
     <ReactiveUIAvaloniaVersion>12.0.3</ReactiveUIAvaloniaVersion>
 
     <!-- Dev-инструменты -->
-    <HotAvaloniaVersion>3.1.0</HotAvaloniaVersion>
+    <!--
+      HotAvalonia 3.1.4 (18.07.2026).
+      HotAvalonia.Fody внутри метапакета остался на 3.1.0 — это штатная ситуация.
+    -->
+    <HotAvaloniaVersion>3.1.4</HotAvaloniaVersion>
 
     <!-- Entity Framework Core -->
     <EfCoreVersion>10.0.2</EfCoreVersion>
@@ -27,7 +34,7 @@
     <!-- Microsoft Extensions (совпадает с TFM) -->
     <MsExtVersion>10.0.2</MsExtVersion>
 
-    <!-- AsyncImageLoader: 3.8.0 — Avalonia 12 support -->
+    <!-- AsyncImageLoader: 3.8.0 — последняя актуальная версия, Avalonia 12 support -->
     <AsyncImageLoaderVersion>3.8.0</AsyncImageLoaderVersion>
   </PropertyGroup>
 
@@ -184,11 +191,23 @@
       Condition="'$(Configuration)' == 'Debug'" />
   </ItemGroup>
 
+  <!--
+    HotAvalonia требует явного companion-reference на Avalonia.Markup.Xaml.Loader,
+    чтобы runtime XAML-парсер совпадал с версией Avalonia, а не с более старой версией
+    внутри самого HotAvalonia (который поддерживает все релизы начиная с Avalonia 11.0.0).
+  -->
   <ItemGroup Label="Hot Reload" Condition="'$(Configuration)' == 'Debug'">
     <PackageReference Include="HotAvalonia" Version="$(HotAvaloniaVersion)" PrivateAssets="All" />
+    <PackageReference Include="Avalonia.Markup.Xaml.Loader" Version="$(AvaloniaVersion)" PrivateAssets="All" />
   </ItemGroup>
 
   <ItemGroup Label="Avalonia Community">
+    <!--
+      Avalonia.Controls.ItemsRepeater официально retired начиная с Avalonia 12.
+      Версии 12.1.x не существует; пакет заморожен на 12.0.0.
+      Constraint "Avalonia >= 12.0.0" покрывает 12.1.x — совместимость сохранена.
+      Удаление невозможно: ItemsRepeater активно используется в TrackListControl и PlaylistCoverPicker.
+    -->
     <PackageReference Include="Avalonia.Controls.ItemsRepeater" Version="12.0.0" />
     <PackageReference Include="Xaml.Behaviors.Avalonia" Version="12.0.0" />
   </ItemGroup>
@@ -210,7 +229,7 @@
   </ItemGroup>
 
   <ItemGroup Label="Linux Interop">
-    <PackageReference Include="Tmds.DBus.Protocol" Version="0.92.0" />
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.94.1" />
   </ItemGroup>
 
   <ItemGroup>

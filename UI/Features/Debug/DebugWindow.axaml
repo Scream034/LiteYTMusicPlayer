@@ -102,16 +102,9 @@
                 </Border>
 
                 <!-- Row 1: Group filter buttons -->
-                <!--
-                    Tag передаёт TestRunnerViewModel в дочерние DataTemplate
-                    без явного каста типа в binding-выражении.
-                    Это обходит резолюцию типов которая крашит Avalonia 11.2+.
-                -->
                 <Border Grid.Row="1" Background="{DynamicResource BgElevatedBrush}"
                     Padding="8,4">
-                    <StackPanel Orientation="Horizontal" Spacing="4"
-                        x:Name="GroupFilterPanel"
-                        Tag="{Binding}">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
                         <TextBlock Text="Group:" VerticalAlignment="Center"
                             FontSize="11" FontWeight="SemiBold"
                             Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,4,0" />
@@ -131,8 +124,7 @@
                             <TextBlock Text="All" />
                         </Button>
 
-                        <ItemsControl ItemsSource="{Binding AvailableGroups}"
-                            Tag="{Binding #GroupFilterPanel.Tag}">
+                        <ItemsControl ItemsSource="{Binding AvailableGroups}">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
                                     <StackPanel Orientation="Horizontal" Spacing="4" />
@@ -141,7 +133,7 @@
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <Button
-                                        Command="{Binding $parent[ItemsControl].((vm:TestRunnerViewModel)Tag).ToggleGroupFilterCommand}"
+                                        Command="{Binding $parent[ItemsControl].((vm:TestRunnerViewModel)DataContext).ToggleGroupFilterCommand}"
                                         CommandParameter="{Binding Name}"
                                         Padding="8,4" CornerRadius="10" FontSize="11"
                                         ToolTip.Tip="{Binding Label}">
@@ -336,7 +328,7 @@
             </Grid>
         </TabItem>
 
-        <!-- TAB 3: MEMORY -->
+<!-- TAB 3: MEMORY -->
         <TabItem Header="🧠 Memory">
             <Grid RowDefinitions="Auto,*">
                 <Border Grid.Row="0" Background="{DynamicResource BgElevatedBrush}"
@@ -374,6 +366,17 @@
                                 <PathIcon Data="{StaticResource Icon.BugCheck}" Width="16"
                                     Height="16" />
                                 <TextBlock Text="Check VM Leaks" />
+                            </StackPanel>
+                        </Button>
+
+                        <Rectangle Width="1" Fill="{DynamicResource TextSecondaryBrush}" Margin="2,2" />
+
+                        <Button Command="{Binding ToggleWatchdogCommand}"
+                            Background="#00897B" Foreground="White" Padding="12,8"
+                            ToolTip.Tip="Toggle UI Hang Watchdog monitoring (500ms threshold)">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <PathIcon Data="{StaticResource Icon.AlertCircle}" Width="16" Height="16" />
+                                <TextBlock Text="{Binding WatchdogStatusText}" />
                             </StackPanel>
                         </Button>
                     </StackPanel>

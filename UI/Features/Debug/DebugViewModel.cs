@@ -3,13 +3,13 @@ using LMP.Core.Youtube.Search;
 using ReactiveUI;
 
 using Microsoft.Extensions.DependencyInjection;
-using LMP.UI.Features.Shared;
 using LMP.Core.Audio.Helpers;
 using LMP.Core.Audio.Cache;
 using LMP.Core.Audio.Interfaces;
 using LMP.Core.Audio.Sources;
 using LMP.Core.Audio.Decoders;
 using LMP.Core.Audio.Backends;
+using LMP.Core.Diagnostics;
 
 namespace LMP.UI.Features.Debug;
 
@@ -41,9 +41,16 @@ public sealed partial class DebugViewModel : ViewModelBase, IDisposable
     [Reactive] public partial int AudioTestDuration { get; set; } = 10;
     [Reactive] public partial bool IsAudioPlaying { get; set; }
 
+    /// <summary> Активен ли в данный момент фоновый мониторинг зависаний UI-потока. </summary>
+    [Reactive] public partial bool IsWatchdogEnabled { get; set; }
+
+    /// <summary> Текст состояния для отображения на кнопке управления Watchdog. </summary>
+    [Reactive] public partial string WatchdogStatusText { get; set; } = "Watchdog: OFF";
+
     private CancellationTokenSource? _audioTestCts;
     private AudioPlayer? _testPlayer;
     private AudioCacheManager? _testCacheManager;
+    private UIHangWatchdog? _uiWatchdog;
 
     public ReactiveCommand<Unit, Unit> GetLikedVideosCommand { get; }
     public ReactiveCommand<Unit, Unit> GetLikedMusicCommand { get; }
@@ -62,6 +69,8 @@ public sealed partial class DebugViewModel : ViewModelBase, IDisposable
     public ReactiveCommand<Unit, Unit> ShowCacheStatsCommand { get; }
     public ReactiveCommand<Unit, Unit> ClearAudioCacheCommand { get; }
     public ReactiveCommand<Unit, Unit> TestLocalFileCommand { get; }
+
+    public ReactiveCommand<Unit, Unit> ToggleWatchdogCommand { get; }
 
     public DebugViewModel()
     {
@@ -89,6 +98,32 @@ public sealed partial class DebugViewModel : ViewModelBase, IDisposable
         ShowCacheStatsCommand = CreateCommand(ReactiveCommand.Create(ExecuteShowCacheStats));
         ClearAudioCacheCommand = CreateCommand(ReactiveCommand.CreateFromTask(ExecuteClearAudioCache));
         TestLocalFileCommand = CreateCommand(ReactiveCommand.CreateFromTask(ExecuteTestLocalFile));
+
+        IsWatchdogEnabled = UIHangWatchdog.IsEnabled;
+        WatchdogStatusText = IsWatchdogEnabled ? "Watchdog: ON" : "Watchdog: OFF";
+
+        ToggleWatchdogCommand = CreateCommand(ReactiveCommand.Create(() =>
+        {
+            var newState = !IsWatchdogEnabled;
+            UIHangWatchdog.SetEnabled(newState);
+
+            if (newState)
+            {
+                _uiWatchdog?.Dispose();
+                _uiWatchdog = new UIHangWatchdog();
+                _uiWatchdog.Start();
+                AppendLog("[Watchdog] UI Hang Watchdog ENABLED (500ms threshold)");
+            }
+            else
+            {
+                _uiWatchdog?.Dispose();
+                _uiWatchdog = null;
+                AppendLog("[Watchdog] UI Hang Watchdog DISABLED");
+            }
+
+            IsWatchdogEnabled = newState;
+            WatchdogStatusText = newState ? "Watchdog: ON" : "Watchdog: OFF";
+        }));
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -632,6 +667,8 @@ public sealed partial class DebugViewModel : ViewModelBase, IDisposable
             _audioTestCts?.Dispose();
             _testPlayer?.Dispose();
             _testCacheManager?.Dispose();
+            _uiWatchdog?.Dispose();
+            _uiWatchdog = null;
             TestRunner.Dispose();
         }
         base.Dispose(disposing);

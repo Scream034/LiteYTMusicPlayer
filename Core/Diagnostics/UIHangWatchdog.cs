@@ -19,6 +19,19 @@ public sealed class UIHangWatchdog : IDisposable
     private volatile bool _disposed;
 
     /// <summary>
+    /// Глобальный флаг включения watchdog. По умолчанию отключён.
+    /// </summary>
+    public static bool IsEnabled { get; private set; }
+
+    /// <summary>
+    /// Включает или отключает watchdog. При отключении текущий экземпляр останавливается.
+    /// </summary>
+    public static void SetEnabled(bool enabled)
+    {
+        IsEnabled = enabled;
+    }
+
+    /// <summary>
     /// Минимальный интервал между последовательными дампами во избежание генерации дубликатов.
     /// </summary>
     private const int CooldownAfterHangMs = 15_000;

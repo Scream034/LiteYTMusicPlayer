@@ -45,8 +45,12 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <!-- Переопределение транзитивной зависимости для устранения уязвимости GHSA-2m69-gcr7-jv3q
-    (SQLitePCLRaw.lib.e_sqlite3) -->
+    <!--
+      Security override: EF Core 10.0.2 транзитивно тянет SQLitePCLRaw.bundle_e_sqlite3 2.1.11,
+      которая содержит уязвимую SQLitePCLRaw.lib.e_sqlite3 2.1.11 (GHSA-2m69-gcr7-jv3q, High).
+      Явный пин на 3.0.3 вытесняет 2.1.11: NuGet берёт максимальную версию.
+      SQLitePCLRaw 3.x использует SourceGear.sqlite3 вместо уязвимой lib.e_sqlite3.
+    -->
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
   </ItemGroup>
 
@@ -83,11 +87,7 @@
   <ItemGroup>
     <!-- Синхронизировано до $(EfCoreVersion) для работы с базами SQLite браузеров -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="$(EfCoreVersion)" />
-    <!--
-      Обновлено с 8.0.0 → 9.0.0: алигн с TFM net11.0 / net10-compatible runtime.
-      На Windows DPAPI доступен inbox, пакет нужен только для явной ссылки на тип.
-    -->
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>

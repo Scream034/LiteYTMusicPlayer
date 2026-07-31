@@ -58,6 +58,12 @@ public sealed class NTokenDecryptor : BaseYoutubeDecryptor
             return result!;
         }
 
+        // null = solver сломан (не просто неверный вывод) — байткод для текущей версии плеера
+        // несовместим с актуальным алгоритмом YouTube. Удаляем дисковые артефакты, чтобы
+        // следующий GetOrLoadAsync загрузил свежий base.js вместо повторного чтения .bin.
+        if (result is null)
+            JsService.InvalidatePlayerContextAndBytecode();
+
         Log.Warn($"[NToken] Validation failed for '{Truncate(nToken)}', returning original");
         return nToken;
     }
