@@ -681,6 +681,20 @@ public sealed class ThemeManagerService
         resources[$"{key}TransparentBrush"] = new SolidColorBrush(transparent);
     }
 
+    /// <summary>
+    /// Читает цвет из словаря ресурсов активной темы Avalonia.
+    /// При отсутствии ключа возвращает серый как безопасный fallback.
+    /// </summary>
+    public static Color GetThemeColor(string key)
+    {
+        if (Application.Current?.Resources
+                .TryGetResource(key, null, out var res) == true
+            && res is Color color)
+            return color;
+
+        return Colors.Gray;
+    }
+
     private static bool TryParseColor(string hex, out Color color)
     {
         color = Colors.Transparent;

@@ -103,6 +103,13 @@ public sealed partial class CachingStreamSource : IAudioSource
     private readonly AudioFormat _format;
     private readonly int _bitrate;
 
+    /// <summary>
+    /// Флаг, указывающий, что в данный момент выполняется критическая сетевая
+    /// операция для Seek. Preload loop должен приостановиться, чтобы не создавать
+    /// конкуренцию за сеть.
+    /// </summary>
+    private volatile bool _seekInProgress;
+
     //  Transport alignment 
     private int _requestAlignmentBytes;
 

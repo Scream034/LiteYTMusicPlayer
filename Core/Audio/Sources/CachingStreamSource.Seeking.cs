@@ -38,38 +38,47 @@ public sealed partial class CachingStreamSource
         }
 
         // 4. Медленный путь: данных нет, нужна сетевая загрузка
-        ResetDownloadEpoch();
-
-        int minimalBytes = GetMinimalSeekStartBytes(targetBytePos);
-        if (minimalBytes <= 0)
-            return true;
-
+        _seekInProgress = true;
+        int minimalBytes;
         try
         {
-            var downloadToken = CurrentDownloadToken;
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, downloadToken);
-            linkedCts.CancelAfter(ComputeAdaptiveSeekCriticalTimeoutMs(minimalBytes));
+            ResetDownloadEpoch();
 
-            Log.Debug($"[CachingSource] Seek: downloading minimal {minimalBytes} bytes at {targetBytePos}");
+            minimalBytes = GetMinimalSeekStartBytes(targetBytePos);
+            if (minimalBytes <= 0)
+                return true;
 
-            await EnsureRangeAsync(targetBytePos, minimalBytes, linkedCts.Token, isCritical: true)
-                .ConfigureAwait(false);
+            try
+            {
+                var downloadToken = CurrentDownloadToken;
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, downloadToken);
+                linkedCts.CancelAfter(ComputeAdaptiveSeekCriticalTimeoutMs(minimalBytes));
+
+                Log.Debug($"[CachingSource] Seek: downloading minimal {minimalBytes} bytes at {targetBytePos}");
+
+                await EnsureRangeAsync(targetBytePos, minimalBytes, linkedCts.Token, isCritical: true)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                if (ct.IsCancellationRequested)
+                    return false;
+
+                Log.Debug("[CachingSource] Seek: critical download timed out, decoder will block until data arrives");
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"[CachingSource] Seek: critical range failed: {ex.Message}");
+            }
         }
-        catch (OperationCanceledException)
+        finally
         {
-            if (ct.IsCancellationRequested)
-                return false;
-
-            Log.Debug("[CachingSource] Seek: critical download timed out, decoder will block until data arrives");
-        }
-        catch (Exception ex)
-        {
-            Log.Warn($"[CachingSource] Seek: critical range failed: {ex.Message}");
+            _seekInProgress = false;
         }
 
         // 5. Запуск фоновой предзагрузки (R2)
         long committedAhead = GetBufferedBytesAhead(targetBytePos);
-        int r2SkipBytes = (int)Math.Min(committedAhead, (long)int.MaxValue);
+        int r2SkipBytes = (int)Math.Min(committedAhead, int.MaxValue);
 
         Log.Debug($"[CachingSource] Seek: R1 committed {r2SkipBytes} bytes (requested {minimalBytes}), R2 starts at offset {r2SkipBytes}");
 

@@ -57,7 +57,6 @@ internal static class CdnConnectionPreWarmer
         var now = DateTime.UtcNow;
         string[] hostsToWarm;
 
-        // ← fix #6: объединены два lock в один
         lock (_lock)
         {
             if (now - _lastSpeculativeWarmTime < SpeculativeThrottle)
@@ -106,7 +105,6 @@ internal static class CdnConnectionPreWarmer
                 if (string.Equals(trackedHost, host, StringComparison.OrdinalIgnoreCase)
                     && DateTime.UtcNow - warmTime < WarmCooldown)
                 {
-                    // ← fix #5: был host[..Math.Min(host.Length, 30)]
                     Log.Debug($"[CdnPreWarmer] Host {TruncateHost(host)}... still warm, skipping");
                     return;
                 }
@@ -145,7 +143,6 @@ internal static class CdnConnectionPreWarmer
             CdnHostStatsStore.RecordTtfb(host, sw.ElapsedMilliseconds);
             CdnHostStatsStore.FlushIfNeeded();
 
-            // ← fix #5
             Log.Debug($"[CdnPreWarmer] {TruncateHost(host)}... warm in {sw.ElapsedMilliseconds}ms (HTTP {(int)response.StatusCode})");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }

@@ -185,8 +185,11 @@ public static class AudioConstants
     public const int BitrateThresholdLow = 50;
     public const int BitrateNormLow = 48;
 
-    public const int BitrateThresholdMedLow = 80;
-    public const int BitrateNormMedLow = 64;
+    public const int BitrateThresholdMedLow = 62;
+    public const int BitrateNormMedLow = 56;
+
+    public const int BitrateThresholdMed = 80;
+    public const int BitrateNormMed = 72;
 
     public const int BitrateThresholdStandardAac = 110;
     public const int BitrateNormStandardAac = 96;
@@ -211,6 +214,7 @@ public static class AudioConstants
         <= 0 => 0,
         < BitrateThresholdLow => BitrateNormLow,
         < BitrateThresholdMedLow => BitrateNormMedLow,
+        < BitrateThresholdMed => BitrateNormMed,
         < BitrateThresholdStandardAac => BitrateNormStandardAac,
         < BitrateThresholdStandardOpus => BitrateNormStandardOpus,
         < BitrateThresholdHigh => BitrateNormHigh,

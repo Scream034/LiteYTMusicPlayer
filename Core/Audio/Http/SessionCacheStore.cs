@@ -307,6 +307,7 @@ internal static class SessionCacheStore
     /// </para>
     /// <list type="number">
     ///   <item>Поиск записи по <paramref name="trackId"/>.</item>
+    ///   <item>Проверка отметки <see cref="TrackManifestEntry.ExpireUtc"/> (мгновенный сброс без сетевого вызова).</item>
     ///   <item>Если запись свежая (saved &lt; 10 мин назад) — bypass без probe.</item>
     ///   <item>HTTP HEAD к первому URL с адаптивным timeout.</item>
     ///   <item>200/206 → возвращает entry. 403/404/410 → дропает запись.</item>
@@ -329,7 +330,14 @@ internal static class SessionCacheStore
             if (entry is null || entry.Variants.Count == 0)
                 return null;
 
-            if (DateTime.UtcNow - entry.SavedAtUtc < TimeSpan.FromMinutes(TtlBypassProbeMinutes))
+            // Мгновенная инвалидация без выполнения сетевого зонда, если срок жизни ссылки истек
+            if (entry.ExpireUtc <= DateTime.UtcNow)
+            {
+                Log.Debug($"[SessionCache] ExpireUtc passed for {trackId}, dropping manifest without probe");
+                DropMustHoldLock(trackId);
+                return null;
+            }
+            else if (DateTime.UtcNow - entry.SavedAtUtc < TimeSpan.FromMinutes(TtlBypassProbeMinutes))
             {
                 Log.Debug($"[SessionCache] Probe bypass: track={trackId}, age={(DateTime.UtcNow - entry.SavedAtUtc).TotalSeconds:F0}s, variants={entry.Variants.Count}");
                 return entry;
@@ -346,7 +354,7 @@ internal static class SessionCacheStore
 
             using var request = new HttpRequestMessage(HttpMethod.Head, probeUrl);
             request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 0);
-            request.Version = System.Net.HttpVersion.Version20;
+            request.Version = System.Net.HttpVersion.Version11;
             SharedHttpClient.ApplyUserAgentFromUrl(request, probeUrl);
 
             using var response = await httpClient

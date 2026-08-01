@@ -71,18 +71,21 @@ public sealed partial class CachingStreamSource
         }
 
         /// <summary>
-        /// Мгновенно отменяет активный CTS чтения, прерывая заблокированные сетевые запросы.
+        /// Мгновенно отменяет активные операции чтения синхронно.
         /// </summary>
         internal void CancelActiveReads()
         {
             var oldCts = Interlocked.Exchange(ref _readCts, new CancellationTokenSource());
+            if (oldCts == null) return;
 
-            ThreadPool.UnsafeQueueUserWorkItem(static state =>
+            try
             {
-                try { ((CancellationTokenSource)state!).Cancel(); }
-                catch (ObjectDisposedException) { }
-            }, oldCts);
+                // Синхронная отмена немедленно прерывает блокирующий Read() в DecoderLoop
+                oldCts.Cancel();
+            }
+            catch (ObjectDisposedException) { }
 
+            // Dispose откладываем, чтобы избежать ObjectDisposedException в других потоках
             DeferDisposeCancellationTokenSource(oldCts, 500);
         }
 

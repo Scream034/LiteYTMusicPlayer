@@ -1,7 +1,8 @@
 using System.Collections.ObjectModel;
-using System.Diagnostics;
+using System.Net;
 using System.Reactive;
 using System.Reactive.Linq;
+using Avalonia;
 using Avalonia.Media;
 using Avalonia.Threading;
 using LMP.Core.Audio.Cache;
@@ -131,17 +132,63 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
 
     #region Network
 
+    /// <summary>Состояние последней проверки подключения.</summary>
+    public enum NetworkStatusKind
+    {
+        /// <summary>Проверка ещё не выполнялась.</summary>
+        Unknown,
+        /// <summary>Проверка выполняется в данный момент.</summary>
+        Checking,
+        /// <summary>YouTube доступен напрямую.</summary>
+        Ok,
+        /// <summary>Нет подключения к интернету.</summary>
+        NoInternet,
+        /// <summary>Подключение идёт через VPN-интерфейс.</summary>
+        VpnDetected,
+        /// <summary>Подключение идёт через явно заданный прокси.</summary>
+        ProxyActive,
+        /// <summary>YouTube недоступен — ошибка сети или блокировка.</summary>
+        Error
+    }
+
+    [Reactive]
+    public partial NetworkStatusKind NetworkStatus { get; private set; }
+    = NetworkStatusKind.Unknown;
+
+    /// <summary>
+    /// Цвет индикатора статуса сети.
+    /// Читается из активной темы приложения — не хардкодим цвета.
+    /// </summary>
+    public Color NetworkStatusColor => NetworkStatus switch
+    {
+        NetworkStatusKind.Ok => ThemeManagerService.GetThemeColor("Accent"),
+        NetworkStatusKind.VpnDetected => ThemeManagerService.GetThemeColor("SystemInfoBlue"),
+        NetworkStatusKind.ProxyActive => ThemeManagerService.GetThemeColor("Accent"),
+        NetworkStatusKind.Checking => ThemeManagerService.GetThemeColor("SystemWarnOrange"),
+        NetworkStatusKind.NoInternet => ThemeManagerService.GetThemeColor("SystemError"),
+        NetworkStatusKind.Error => ThemeManagerService.GetThemeColor("SystemError"),
+        _ => ThemeManagerService.GetThemeColor("TextSecondary"),
+    };
+
+    [Reactive] public partial string NetworkStatusText { get; private set; } = "";
+
+    /// <summary>Задержка последнего успешного запроса к YouTube в миллисекундах.</summary>
+    [Reactive] public partial int NetworkLatencyMs { get; private set; }
+
+    /// <summary>
+    /// Возвращает <c>true</c> если задержка измерена и ненулевая.
+    /// Управляет видимостью метки латентности без конвертеров на стороне XAML.
+    /// </summary>
+    public bool HasLatency => NetworkLatencyMs > 0;
+
+    /// <summary>Флаг активной проверки подключения — блокирует повторный запуск.</summary>
+    [Reactive] public partial bool IsNetworkTesting { get; private set; }
+
     /// <summary>Доступные профили скорости интернета для ComboBox.</summary>
     public ObservableCollection<LocalizedItem<InternetProfile>> InternetProfileOptions { get; } = [];
 
     /// <summary>Выбранный профиль скорости; синхронизируется с настройками через подписку.</summary>
     [Reactive] public partial LocalizedItem<InternetProfile>? SelectedInternetProfile { get; set; }
-
-    /// <summary>Доступные YouTube-клиенты для ComboBox.</summary>
-    public ObservableCollection<LocalizedItem<YoutubeClientProfile>> ClientOptions { get; } = [];
-
-    /// <summary>Выбранный YouTube-клиент; синхронизируется с настройками через подписку.</summary>
-    [Reactive] public partial LocalizedItem<YoutubeClientProfile>? SelectedClient { get; set; }
 
     [Reactive] public partial bool ProxyEnabled { get; set; }
     [Reactive] public partial string ProxyHost { get; set; } = "";
@@ -362,6 +409,7 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
     public ReactiveCommand<Unit, Unit> ClearDownloadsCommand { get; }
     public ReactiveCommand<Unit, Unit> ShowNormalizationInfoCommand { get; }
     public ReactiveCommand<Unit, Unit> RefreshProfileCommand { get; }
+    public ReactiveCommand<Unit, Unit> TestNetworkCommand { get; }
 
     #endregion
 
@@ -414,6 +462,7 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
             () => MemoryCleanupHelper.PerformCleanup(aggressive: true)));
         ShowNormalizationInfoCommand = CreateCommand(ReactiveCommand.CreateFromTask(ShowNormalizationInfoAsync));
         RefreshProfileCommand = CreateCommand(ReactiveCommand.CreateFromTask(RefreshProfileAsync));
+        TestNetworkCommand = CreateCommand(ReactiveCommand.CreateFromTask(TestNetworkAsync));
 
         SidebarItems =
         [
@@ -447,18 +496,6 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
                 .Subscribe(_ => UpdateCacheStats())
                 .DisposeWith(Disposables);
         }
-
-        this.WhenAnyValue(x => x.SelectedClient)
-            .Skip(1).WhereNotNull()
-            .Where(_ => !_isLoadingSettings)
-            .Subscribe(async c =>
-            {
-                _library.UpdateSettings(s => s.YoutubeClient = c.Value);
-                YoutubeClientUtils.CurrentProfile = c.Value;
-                await AudioEngine.ReinitializeWithProfileAsync(_library.Settings.InternetProfile);
-                _youtube.ClearCache();
-            })
-            .DisposeWith(Disposables);
 
         this.WhenAnyValue(x => x.DownloadedTracksLimitMb)
             .Skip(1)
@@ -725,13 +762,6 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
         if (currentImgPreset != ImageCachePreset.Custom)
             SelectedImageCachePreset = ImageCachePresets.FirstOrDefault(x => x.Value == currentImgPreset);
 
-        var currentClient = SelectedClient?.Value ?? _library.Settings.YoutubeClient;
-        ClientOptions.Clear();
-        ClientOptions.Add(new(YoutubeClientProfile.AndroidVR, SL["Client_AndroidVR"]));
-        ClientOptions.Add(new(YoutubeClientProfile.TV, SL["Client_TV"]));
-        ClientOptions.Add(new(YoutubeClientProfile.Web, SL["Client_Web"]));
-        SelectedClient = ClientOptions.FirstOrDefault(x => x.Value == currentClient) ?? ClientOptions[0];
-
         var currentCurve = SelectedVolumeCurve?.Value ?? _library.Settings.Audio.VolumeCurve;
         VolumeCurveOptions.Clear();
         VolumeCurveOptions.Add(new(VolumeCurveType.Linear, SL["VolumeCurve_Linear"]));
@@ -809,6 +839,16 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
         if (_subscriptionsSetup) return;
         _subscriptionsSetup = true;
 
+        this.WhenAnyValue(x => x.SelectedSidebarItem)
+            .Skip(1).WhereNotNull()
+            .Where(_ => !_isLoadingSettings)
+            .Subscribe(item =>
+            {
+                if (item is NetworkSidebarItem && NetworkStatus == NetworkStatusKind.Unknown)
+                    _ = TestNetworkAsync();
+            })
+            .DisposeWith(Disposables);
+
         this.WhenAnyValue(x => x.SelectedCloseAction)
             .Skip(1).WhereNotNull()
             .Where(_ => !_isLoadingSettings)
@@ -834,10 +874,12 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
         this.WhenAnyValue(x => x.SelectedInternetProfile)
             .Skip(1).WhereNotNull()
             .Where(_ => !_isLoadingSettings)
-            .Subscribe(p =>
+            .Subscribe(async p =>
             {
                 _library.UpdateSettings(s => s.InternetProfile = p.Value);
-                NetworkRestartRequired = true;
+
+                // Применяется сразу — перезапуск не нужен.
+                await AudioEngine.ReinitializeWithProfileAsync(p.Value);
             })
             .DisposeWith(Disposables);
 
@@ -846,7 +888,7 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
                 x => x.ProxyAuth, x => x.ProxyUser, x => x.ProxyPass)
             .Skip(1)
             .Where(_ => !_isLoadingSettings)
-            .Subscribe(_ => { NetworkRestartRequired = true; SaveNetworkSettings(); })
+            .Subscribe(_ => SaveNetworkSettings())
             .DisposeWith(Disposables);
 
         this.WhenAnyValue(x => x.ImageCacheLimitMb, x => x.AudioCacheLimitMb)
@@ -1196,8 +1238,6 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
 
             SelectedInternetProfile = InternetProfileOptions.FirstOrDefault(x => x.Value == s.InternetProfile)
                                    ?? InternetProfileOptions[1];
-            SelectedClient = ClientOptions.FirstOrDefault(x => x.Value == s.YoutubeClient)
-                                   ?? ClientOptions[0];
 
             ProxyEnabled = s.Proxy.Enabled;
             ProxyHost = s.Proxy.Host;
@@ -1299,19 +1339,34 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
             (byte)(c.G * (1 - factor)),
             (byte)(c.B * (1 - factor)));
 
-    /// <summary>Сохраняет сетевые настройки (профиль + прокси) одним вызовом.</summary>
+    /// <summary>
+    /// Сохраняет сетевые настройки и немедленно применяет их к обоим HTTP-клиентам.
+    /// Перезапуск приложения не требуется.
+    /// </summary>
     private void SaveNetworkSettings()
     {
-        _library.UpdateSettings(s =>
+        var proxy = new ProxySettings
         {
-            s.InternetProfile = SelectedInternetProfile?.Value ?? InternetProfile.Medium;
-            s.Proxy.Enabled = ProxyEnabled;
-            s.Proxy.Host = ProxyHost;
-            s.Proxy.Port = ProxyPort;
-            s.Proxy.UseAuth = ProxyAuth;
-            s.Proxy.Username = ProxyUser;
-            s.Proxy.Password = ProxyPass;
-        });
+            Enabled = ProxyEnabled,
+            Host = ProxyHost,
+            Port = ProxyPort,
+            UseAuth = ProxyAuth,
+            Username = ProxyUser,
+            Password = ProxyPass,
+        };
+
+        _library.UpdateSettings(s => s.Proxy = proxy);
+
+        Core.Audio.Http.SharedHttpClient.Rebuild(proxy);
+        _youtube.ReloadClient();
+
+        NetworkStatus = NetworkStatusKind.Unknown;
+        NetworkStatusText = "";
+        NetworkLatencyMs = 0;
+        this.RaisePropertyChanged(nameof(NetworkStatusColor));
+        this.RaisePropertyChanged(nameof(HasLatency));
+
+        Log.Info("[Settings] Network settings applied immediately.");
     }
 
     /// <summary>Сохраняет лимиты дискового кэша и обновляет статистику.</summary>
@@ -1584,6 +1639,144 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
             SL["Settings_NormalizationInfo_Title"],
             SL["Settings_NormalizationInfo_Body"],
             SL["Common_GotIt"]);
+    }
+
+    /// <summary>
+    /// Выполняет проверку доступности YouTube и определяет активный профиль подключения.
+    /// Детектирует VPN по типу и описанию сетевых интерфейсов Windows.
+    /// </summary>
+    private async Task TestNetworkAsync()
+    {
+        if (IsNetworkTesting) return;
+
+        IsNetworkTesting = true;
+        NetworkStatus = NetworkStatusKind.Checking;
+        NetworkStatusText = SL["Network_StatusChecking"];
+        NetworkLatencyMs = 0;
+        this.RaisePropertyChanged(nameof(NetworkStatusColor));
+
+        try
+        {
+            if (!System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable())
+            {
+                SetNetworkStatus(NetworkStatusKind.NoInternet, SL["Network_StatusNoInternet"]);
+                return;
+            }
+
+            bool vpnDetected = DetectVpnInterface();
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            bool reachable = await ProbeYoutubeAsync().ConfigureAwait(false);
+            sw.Stop();
+
+            if (!reachable)
+            {
+                SetNetworkStatus(NetworkStatusKind.Error, SL["Network_StatusError"]);
+                return;
+            }
+
+            NetworkLatencyMs = (int)sw.ElapsedMilliseconds;
+
+            if (ProxyEnabled && !string.IsNullOrWhiteSpace(ProxyHost))
+            {
+                SetNetworkStatus(
+                    NetworkStatusKind.ProxyActive,
+                    string.Format(SL["Network_StatusProxy"], ProxyHost, ProxyPort));
+            }
+            else if (vpnDetected)
+            {
+                SetNetworkStatus(NetworkStatusKind.VpnDetected, SL["Network_StatusVpn"]);
+            }
+            else
+            {
+                SetNetworkStatus(NetworkStatusKind.Ok, SL["Network_StatusOk"]);
+            }
+        }
+        catch (Exception ex)
+        {
+            SetNetworkStatus(NetworkStatusKind.Error, ex.Message);
+            Log.Warn($"[Settings] Ошибка проверки сети: {ex.Message}");
+        }
+        finally
+        {
+            IsNetworkTesting = false;
+        }
+    }
+
+    /// <summary>
+    /// Выполняет один GET-запрос к <c>music.youtube.com/generate_204</c>.
+    /// Возвращает <c>true</c> если сервер ответил любым кодом 2xx–3xx.
+    /// </summary>
+    private static async Task<bool> ProbeYoutubeAsync()
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get, "https://music.youtube.com/generate_204");
+
+            request.Version = HttpVersion.Version11;
+            request.Headers.TryAddWithoutValidation("User-Agent", YoutubeClientUtils.UaWebRemix);
+
+            using var response = await Core.Audio.Http.SharedHttpClient.Instance
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token)
+                .ConfigureAwait(false);
+
+            return (int)response.StatusCode is >= 200 and <= 399;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Проверяет наличие активного VPN-интерфейса среди сетевых адаптеров Windows.
+    /// Детектирует Tunnel-тип, а также TAP/TUN/WireGuard/OpenVPN/Cisco по имени и описанию.
+    /// </summary>
+    private static bool DetectVpnInterface()
+    {
+        try
+        {
+            foreach (var iface in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (iface.OperationalStatus !=
+                    System.Net.NetworkInformation.OperationalStatus.Up)
+                    continue;
+
+                if (iface.NetworkInterfaceType ==
+                    System.Net.NetworkInformation.NetworkInterfaceType.Tunnel)
+                    return true;
+
+                var name = iface.Name.ToLowerInvariant();
+                var desc = iface.Description.ToLowerInvariant();
+
+                if (name.Contains("vpn") || desc.Contains("vpn") ||
+                    name.Contains("tap") || desc.Contains("tap") ||
+                    name.Contains("tun") || desc.Contains("tun") ||
+                    name.Contains("wg") || desc.Contains("wireguard") ||
+                    desc.Contains("openvpn") || desc.Contains("cisco") ||
+                    desc.Contains("nordvpn") || desc.Contains("expressvpn"))
+                    return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Debug($"[Settings] Ошибка детектирования VPN: {ex.Message}");
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Устанавливает статус сети и синхронно уведомляет XAML об изменении цвета индикатора.
+    /// </summary>
+    private void SetNetworkStatus(NetworkStatusKind kind, string text)
+    {
+        NetworkStatus = kind;
+        NetworkStatusText = text;
+        this.RaisePropertyChanged(nameof(NetworkStatusColor));
+        this.RaisePropertyChanged(nameof(HasLatency));
     }
 
     /// <inheritdoc />

@@ -542,12 +542,11 @@
 
     <!-- ═══════════════════════════════════════════════════════════════════════════ -->
     <!-- SPINNING ANIMATION - для иконок загрузки (Kind="Loading" Classes="spinning") -->
-    <!-- Работает с MaterialIcon и любым Control                                      -->
     <!-- ═══════════════════════════════════════════════════════════════════════════ -->
 
-    <!-- Вариант для MaterialIcon (основной) -->
     <Style Selector="PathIcon.spinning">
-        <Setter Property="RenderTransformOrigin" Value="50%, 50%" />
+        <Setter Property="RenderTransformOrigin" Value="50%,50%" />
+        <Setter Property="UseLayoutRounding" Value="False" />
         <Setter Property="RenderTransform">
             <RotateTransform />
         </Setter>

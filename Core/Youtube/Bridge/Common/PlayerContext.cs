@@ -380,6 +380,10 @@ public sealed partial class PlayerContext
 
             return (version, urls);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             Log.Error($"[PlayerContext] Version detection failed: {ex.Message}");

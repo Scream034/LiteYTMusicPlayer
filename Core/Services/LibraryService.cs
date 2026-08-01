@@ -205,7 +205,6 @@ public sealed class LibraryService : IAsyncDisposable
             await _settings.SetAsync("AppSettings", Settings, AppJsonContext.Default.AppSettings, ct).ConfigureAwait(false);
         }
 
-        YoutubeClientUtils.CurrentProfile = Settings.YoutubeClient;
         AudioSourceFactory.ApplyInternetProfile(Settings.InternetProfile);
 
         var jsonPath = G.FilePath.Library;

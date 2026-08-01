@@ -5,23 +5,111 @@
     x:DataType="vm:SettingsViewModel"
     x:CompileBindings="True">
 
-    <StackPanel Margin="32,24">
-        <Grid ColumnDefinitions="Auto, *" Margin="0,0,0,16">
-            <PathIcon Grid.Column="0" Data="{StaticResource Icon.Web}"
-                Width="20" Height="20" VerticalAlignment="Center"
+    <StackPanel Margin="32,24" Spacing="16">
+
+        <Grid ColumnDefinitions="Auto,*" Margin="0,0,0,4">
+            <PathIcon Grid.Column="0"
+                Data="{StaticResource Icon.Web}"
+                Width="20" Height="20"
+                VerticalAlignment="Center"
                 Foreground="{DynamicResource AccentBrush}" />
             <TextBlock Grid.Column="1" Classes="h2"
                 Text="{Binding L[Settings_Network]}"
-                VerticalAlignment="Center" Margin="8,0,0,0" />
+                VerticalAlignment="Center"
+                Margin="8,0,0,0" />
         </Grid>
 
+        <!-- Статус подключения -->
+        <Border Classes="card">
+            <StackPanel Spacing="12">
+                <TextBlock Classes="label"
+                    Text="{Binding L[Network_StatusTitle]}" />
+
+                <Grid ColumnDefinitions="Auto,*,Auto">
+
+                    <!-- Цветной индикатор — цвет приходит из VM как HEX-строка.
+                         Avalonia парсит строку в Color через встроенный TypeConverter. -->
+                    <Ellipse Grid.Column="0"
+                        Width="10" Height="10"
+                        VerticalAlignment="Center"
+                        Margin="0,0,10,0">
+                        <Ellipse.Fill>
+                            <SolidColorBrush Color="{Binding NetworkStatusColor}" />
+                        </Ellipse.Fill>
+                    </Ellipse>
+
+                    <StackPanel Grid.Column="1"
+                        Orientation="Horizontal" Spacing="8"
+                        VerticalAlignment="Center">
+
+                        <TextBlock
+                            Text="{Binding NetworkStatusText}"
+                            VerticalAlignment="Center"
+                            IsVisible="{Binding NetworkStatusText,
+                                Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+                        <!-- Задержка — скрыт пока не получен первый результат -->
+                        <TextBlock
+                            VerticalAlignment="Center"
+                            Foreground="{DynamicResource TextSecondaryBrush}"
+                            IsVisible="{Binding HasLatency}">
+                            <TextBlock.Text>
+                                <MultiBinding StringFormat="({0} ms)">
+                                    <Binding Path="NetworkLatencyMs" />
+                                </MultiBinding>
+                            </TextBlock.Text>
+                        </TextBlock>
+
+                        <TextBlock
+                            Text="{Binding L[Network_StatusUnknown]}"
+                            Foreground="{DynamicResource TextSecondaryBrush}"
+                            VerticalAlignment="Center"
+                            IsVisible="{Binding NetworkStatusText,
+                                Converter={x:Static StringConverters.IsNullOrEmpty}}" />
+                    </StackPanel>
+
+                    <Button Grid.Column="2"
+                        Command="{Binding TestNetworkCommand}"
+                        IsEnabled="{Binding !IsNetworkTesting}"
+                        MinWidth="160">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <PathIcon
+                                Data="{StaticResource Icon.Refresh}"
+                                Width="14" Height="14"
+                                IsVisible="{Binding !IsNetworkTesting}" />
+
+                            <PathIcon
+                                Data="{StaticResource Icon.Refresh}"
+                                Width="14" Height="14"
+                                Classes="spinning"
+                                Foreground="{DynamicResource AccentBrush}"
+                                IsVisible="{Binding IsNetworkTesting}"
+                                VerticalAlignment="Center" />
+
+                            <TextBlock
+                                Text="{Binding L[Network_TestButton]}"
+                                IsVisible="{Binding !IsNetworkTesting}"
+                                VerticalAlignment="Center" />
+                            <TextBlock
+                                Text="{Binding L[Network_Testing]}"
+                                IsVisible="{Binding IsNetworkTesting}"
+                                VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- Профиль и клиент -->
         <Border Classes="card">
             <StackPanel Spacing="20">
 
-                <Grid ColumnDefinitions="*, Auto">
+                <Grid ColumnDefinitions="*,Auto">
                     <StackPanel>
-                        <TextBlock Classes="label" Text="{Binding L[Settings_NetProfile]}" />
-                        <TextBlock Classes="desc" Text="{Binding L[Settings_NetProfileDesc]}" />
+                        <TextBlock Classes="label"
+                            Text="{Binding L[Settings_NetProfile]}" />
+                        <TextBlock Classes="desc"
+                            Text="{Binding L[Settings_NetProfileDesc]}" />
                     </StackPanel>
                     <ComboBox Grid.Column="1"
                         SelectedItem="{Binding SelectedInternetProfile}"
@@ -33,7 +121,7 @@
                     <StackPanel Spacing="12">
                         <CheckBox Content="{Binding L[Common_Enable]}"
                             IsChecked="{Binding ProxyEnabled}" />
-                        <Grid ColumnDefinitions="3*, 16, 1*"
+                        <Grid ColumnDefinitions="3*,16,1*"
                             IsEnabled="{Binding ProxyEnabled}">
                             <TextBox Grid.Column="0"
                                 Text="{Binding ProxyHost}"
@@ -45,27 +133,8 @@
                     </StackPanel>
                 </Expander>
 
-                <Border Background="{DynamicResource SystemWarnOrangeBrush}"
-                    CornerRadius="4" Padding="12"
-                    IsVisible="{Binding NetworkRestartRequired}">
-                    <TextBlock Foreground="{DynamicResource TextDarkBrush}"
-                        FontWeight="Bold"
-                        Text="{Binding L[Settings_RestartRequired]}"
-                        HorizontalAlignment="Center" />
-                </Border>
-
-                <Grid ColumnDefinitions="*, Auto">
-                    <StackPanel>
-                        <TextBlock Classes="label" Text="{Binding L[Settings_Client]}" />
-                        <TextBlock Classes="desc" Text="{Binding L[Settings_ClientDesc]}" />
-                    </StackPanel>
-                    <ComboBox Grid.Column="1"
-                        ItemsSource="{Binding ClientOptions}"
-                        SelectedItem="{Binding SelectedClient}"
-                        MinWidth="200" />
-                </Grid>
-
             </StackPanel>
         </Border>
+
     </StackPanel>
 </UserControl>

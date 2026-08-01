@@ -1,7 +1,5 @@
 using System.Buffers;
 using System.Numerics;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using LMP.Core.Audio.Decoders;
 using LMP.Core.Audio.Helpers;
 using LMP.Core.Audio.Interfaces;
@@ -20,7 +18,7 @@ public sealed class AudioPipeline : IAsyncDisposable
 
     private const int BufferFullDelayMs = 5;
     private const int DrainMinDelayMs = 50;
-    private const int DrainMaxDelayMs = 500;
+    private const int DrainMaxDelayMs = 150;
     private const int HResultFileNotFound = unchecked((int)0x80070002);
     private const int HResultPathNotFound = unchecked((int)0x80070003);
     private const int PrematureEndToleranceMs = 2_000;
@@ -261,7 +259,7 @@ public sealed class AudioPipeline : IAsyncDisposable
         IAudioSource source,
         IAudioDecoder decoder)
     {
-        bool isFromCache = descriptor.Origin == StreamSource.DiskCacheFull
+        bool isFromLocalFile = descriptor.Origin == StreamSource.DiskCacheFull
             || (source is Sources.LocalFileSource);
 
         return AudioStreamInfo.FromDescriptor(
@@ -269,7 +267,7 @@ public sealed class AudioPipeline : IAsyncDisposable
             sampleRate: decoder.SampleRate > 0 ? decoder.SampleRate : DefaultSampleRate,
             channels: decoder.Channels > 0 ? decoder.Channels : DefaultChannels,
             durationMs: source.DurationMs,
-            isFromCache: isFromCache);
+            isFromCache: isFromLocalFile);
     }
 
     #endregion
@@ -634,6 +632,19 @@ public sealed class AudioPipeline : IAsyncDisposable
         return _backend.WaitForWarmup(timeoutMs);
     }
 
+    /// <summary>
+    /// Асинхронно ожидает готовности backend без блокировки вызывающего потока.
+    /// </summary>
+    /// <param name="timeoutMs">Максимальное время ожидания в миллисекундах.</param>
+    /// <param name="ct">Токен отмены.</param>
+    /// <returns>Задача, возвращающая <c>true</c> если прогрев успешен.</returns>
+    public async ValueTask<bool> WaitForBackendWarmupAsync(int timeoutMs, CancellationToken ct)
+    {
+        if (_disposed) return false;
+        // Оборачиваем синхронный Wait в задачу, чтобы освободить вызывающий поток (Actor Thread).
+        return await Task.Run(() => _backend.WaitForWarmup(timeoutMs), ct).ConfigureAwait(false);
+    }
+
     public void Start()
     {
         if (_disposed) return;
@@ -839,21 +850,25 @@ public sealed class AudioPipeline : IAsyncDisposable
 
     public async Task<bool> WaitForBufferAsync(int minSamples, int maxWaitMs, CancellationToken ct)
     {
+        // Быстрый путь: если буфер уже готов, выходим немедленно, не создавая TCS.
         if (_disposed || _pcmBuffer.Count >= minSamples) return true;
 
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Volatile.Write(ref _warmupTcs, tcs);
         Volatile.Write(ref _warmupThreshold, minSamples);
 
+        // Повторная проверка ПОСЛЕ публикации TCS.
+        // Это закрывает race window: если декодер заполнил буфер между первой проверкой и публикацией TCS,
+        // мы это здесь поймаем и не будем ждать таймаут.
         if (_pcmBuffer.Count >= minSamples)
         {
             Volatile.Write(ref _warmupThreshold, 0);
-            tcs.TrySetResult();
+            Interlocked.CompareExchange(ref _warmupTcs, null, tcs); // Безопасно убираем наш TCS
+            tcs.TrySetResult(); // Сигнализируем на случай, если кто-то уже подписался
             return true;
         }
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-
         try
         {
             var delayTask = Task.Delay(maxWaitMs, timeoutCts.Token);
@@ -861,13 +876,13 @@ public sealed class AudioPipeline : IAsyncDisposable
 
             if (completedTask == tcs.Task)
             {
-                timeoutCts.Cancel();
+                timeoutCts.Cancel(); // Отменяем таймер, т.к. мы завершились по сигналу
                 return true;
             }
             else
             {
-                ct.ThrowIfCancellationRequested();
-                return false;
+                ct.ThrowIfCancellationRequested(); // Если отменили извне
+                return false; // Завершились по таймауту
             }
         }
         finally

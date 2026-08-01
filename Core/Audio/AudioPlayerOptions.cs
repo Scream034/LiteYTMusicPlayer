@@ -11,6 +11,12 @@ public sealed class AudioPlayerOptions
     /// <summary>Колбэк для обновления протухших URL на лету.</summary>
     public Func<string, CancellationToken, ValueTask<string?>>? UrlRefreshCallback { get; init; }
 
+    /// <summary>
+    /// Вызывается при обнаружении starvation (200+ underrun подряд).
+    /// AudioEngine использует для форсированного rebuild HTTP-клиентов.
+    /// </summary>
+    public Action? OnStarvationDetected { get; init; }
+
     /// <summary>Частота оповещений UI об изменении позиции (мс).</summary>
     public TimeSpan PositionUpdateInterval { get; init; } = TimeSpan.FromMilliseconds(DefaultPositionUpdateIntervalMs);
 

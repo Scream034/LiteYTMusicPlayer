@@ -112,6 +112,14 @@ public sealed partial class CachingStreamSource
                     continue;
                 }
 
+                // Критическая сетевая операция seek в процессе — уступаем ей весь канал
+                if (_seekInProgress)
+                {
+                    try { await Task.Delay(_config.PreloadIntervalMs, ct).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { break; }
+                    continue;
+                }
+
                 //  Дебаунс после resume 
                 if (justResumed)
                 {

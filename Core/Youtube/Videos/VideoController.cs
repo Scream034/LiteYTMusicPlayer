@@ -16,6 +16,9 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
 
     private static DateTime _lastBotDetection = DateTime.MinValue;
     private static int _consecutiveFailures;
+    private static readonly SemaphoreSlim _requestThrottle = new(1, 1);
+    private static readonly Lock _stateLock = new();
+
     /// <summary>
     /// Количество BotDetection-сбоев ANDROID_VR в текущей сессии.
     /// Используется для пропуска клиента, стабильно блокируемого сервером,
@@ -23,8 +26,8 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
     /// Сбрасывается при успешном ответе ANDROID_VR или явном <see cref="ResetBotDetectionState"/>.
     /// </summary>
     private static volatile int _androidVrSessionBotDetections;
-    private static readonly SemaphoreSlim _requestThrottle = new(1, 1);
-    private static readonly Lock _stateLock = new();
+    private static DateTime _androidVrLastBotDetection = DateTime.MinValue;
+    private const int AndroidVrCooldownSeconds = 300; // 5 минут
 
     public static readonly TimeSpan CooldownDuration = TimeSpan.FromMinutes(2);
 
@@ -59,6 +62,7 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
         {
             _consecutiveFailures = 0;
             _androidVrSessionBotDetections = 0;
+            _androidVrLastBotDetection = DateTime.MinValue;
             _lastBotDetection = DateTime.MinValue;
             Log.Info("[VideoController] Bot detection state reset");
         }
@@ -134,8 +138,7 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
         VideoId videoId,
         CancellationToken cancellationToken = default)
     {
-        var clientName = YoutubeClientUtils.CurrentProfile.ToString().ToUpperInvariant();
-        if (clientName == "ANDROIDVR") clientName = "ANDROID_VR";
+        var clientName = YoutubeClientUtils.GetClientApiName(YoutubeClientUtils.CurrentProfile);
         return await GetPlayerResponseWithClientAsync(videoId, clientName, cancellationToken);
     }
 
@@ -234,6 +237,7 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
 
     /// <summary>
     /// Извлекает signatureTimestamp из единого кэша <see cref="PlayerContextManager"/>.
+    /// При сетевом таймауте делает fallback на дисковый кэш, если он доступен.
     /// Пробрасывает сетевые ошибки и отмены, чтобы вызывающий код
     /// мог корректно определить причину сбоя.
     /// </summary>
@@ -241,6 +245,7 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
     /// <returns>Строка signatureTimestamp или <c>null</c> при некритичной ошибке.</returns>
     private async ValueTask<string?> ResolveSignatureTimestampAsync(CancellationToken ct)
     {
+        // 1. Быстрый путь: in-memory кэш
         var cached = _playerManager.GetCachedSignatureTimestamp();
         if (!string.IsNullOrEmpty(cached)) return cached;
 
@@ -263,15 +268,60 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
         {
             throw;
         }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Внутренний таймаут GetOrLoadAsync (не отмена вызывающего кода) —
+            // пробуем дисковый кэш, который мог остаться от предыдущей сессии
+            Log.Warn("[VideoController] GetOrLoadAsync timed out internally, trying disk cache fallback");
+            return TryFallbackSignatureTimestamp();
+        }
         catch (OperationCanceledException)
         {
+            // Отмена вызывающего кода — пробрасываем
             throw;
         }
         catch (Exception ex)
         {
             Log.Warn($"[VideoController] Failed to get signatureTimestamp: {ex.Message}");
-            return null;
+            return TryFallbackSignatureTimestamp();
         }
+    }
+
+    /// <summary>
+    /// Пытается извлечь signatureTimestamp из дискового кэша PlayerContext
+    /// без обращения к сети. Возвращает <c>null</c> если кэш отсутствует.
+    /// </summary>
+    private string? TryFallbackSignatureTimestamp()
+    {
+        // Повторная проверка in-memory — мог быть заполнен параллельным потоком
+        var cached = _playerManager.GetCachedSignatureTimestamp();
+        if (!string.IsNullOrEmpty(cached))
+        {
+            Log.Debug($"[VideoController] STS fallback: found in memory cache: {cached}");
+            return cached;
+        }
+
+        // Пробуем загрузить из дискового кэша без сети
+        var diskContext = PlayerContextManager.TryLoadFromDiskCache();
+        if (diskContext != null)
+        {
+            var sts = diskContext.Sts;
+
+            if (string.IsNullOrEmpty(sts) && !string.IsNullOrEmpty(diskContext.BaseJs))
+            {
+                sts = YoutubeAstSolver.ExtractSts(diskContext.BaseJs);
+            }
+
+            if (!string.IsNullOrEmpty(sts))
+            {
+                _playerManager.SetCachedSignatureTimestamp(sts);
+                Log.Info($"[VideoController] STS fallback: resolved from disk cache: {sts}");
+                return sts;
+            }
+        }
+
+        Log.Warn("[VideoController] STS fallback: no disk cache available");
+        return null;
     }
 
     #endregion
@@ -353,12 +403,14 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
             // Пропускаем клиент, если он уже давал BotDetection в текущей сессии.
             // Это предотвращает ~700 мс блокировку WEB_REMIX при каждом force-refresh.
             if (string.Equals(clientName, "ANDROID_VR", StringComparison.Ordinal)
-                && _androidVrSessionBotDetections > 0)
+                && _androidVrSessionBotDetections > 0
+                && (DateTime.UtcNow - _androidVrLastBotDetection).TotalSeconds < AndroidVrCooldownSeconds)
             {
                 Log.Debug($"[VideoController] [{videoId}] ANDROID_VR skipped — " +
-                          $"{_androidVrSessionBotDetections} BotDetection(s) in session");
-                errors.Add("ANDROID_VR: SKIPPED_BOT_DETECTION_SESSION");
-                allBotDetection = true; // счётчик уже ненулевой — флаг остаётся корректным
+                        $"{_androidVrSessionBotDetections} BotDetection(s), " +
+                        $"cooldown {AndroidVrCooldownSeconds - (int)(DateTime.UtcNow - _androidVrLastBotDetection).TotalSeconds}s remaining");
+                errors.Add("ANDROID_VR: SKIPPED_BOT_DETECTION_COOLDOWN");
+                allBotDetection = true;
                 hasNonNetworkFailure = true;
                 continue;
             }
@@ -369,9 +421,14 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
 
                 if (response.IsPlayable && HasAnyStream(response))
                 {
-                    // Успешный ответ ANDROID_VR означает, что блокировка снята
-                    if (string.Equals(clientName, "ANDROID_VR", StringComparison.Ordinal))
-                        Interlocked.Exchange(ref _androidVrSessionBotDetections, 0);
+                    // Успешный ответ ANDROID_VR — блокировка снята, СБРАСЫВАЕМ счётчик
+                    if (string.Equals(clientName, "ANDROID_VR", StringComparison.Ordinal)
+                        && _androidVrSessionBotDetections > 0)
+                    {
+                        _androidVrSessionBotDetections = 0;
+                        _androidVrLastBotDetection = DateTime.MinValue;
+                        Log.Debug("[VideoController] ANDROID_VR bot detection counter reset on success");
+                    }
 
                     Log.Info($"[VideoController] [{videoId}] SUCCESS with {clientName}");
                     return (response, clientName);
@@ -484,7 +541,8 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
         }
 
         throw new VideoUnplayableException(
-            $"Video {videoId} is not available through any client. Errors: {allErrors}");
+            $"Video {videoId} is not available through any client. Errors: {allErrors}",
+            videoId.Value);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

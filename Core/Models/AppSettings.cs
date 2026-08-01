@@ -333,7 +333,6 @@ public sealed class AppSettings
 
     // === Network ===
     public InternetProfile InternetProfile { get; set; } = InternetProfile.Medium;
-    public YoutubeClientProfile YoutubeClient { get; set; } = YoutubeClientProfile.AndroidVR;
     public ProxySettings Proxy { get; set; } = new();
     public StorageSettings Storage { get; set; } = new();
 

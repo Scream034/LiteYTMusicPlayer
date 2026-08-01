@@ -180,8 +180,10 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
                 YoutubeNetworkException netEx => HandleNetworkErrorAsync(netEx, isDuplicate),
                 LoginRequiredException loginEx => HandleLoginRequiredAsync(loginEx, isDuplicate),
                 StreamUnavailableException streamEx => HandleStreamUnavailableAsync(streamEx, isDuplicate),
+                VideoUnplayableException unplayableEx => HandleVideoUnplayableAsync(unplayableEx, isDuplicate),
                 ChunkDownloadFatalException chunkEx => HandleChunkFatalAsync(chunkEx, isDuplicate),
-                OperationCanceledException oce2 when NetworkErrorHelper.IsCancellationLike(oce2) => Task.CompletedTask,
+                OperationCanceledException oce2
+                    when NetworkErrorHelper.IsCancellationLike(oce2) => Task.CompletedTask,
                 _ => HandleGenericErrorAsync(actualException, isDuplicate)
             });
         }
@@ -243,6 +245,22 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
         await DispatchPlaybackErrorAsync(exception, messageKey, attempts, isDuplicate);
     }
 
+    /// <summary>
+    /// Обрабатывает ситуацию, когда видео недоступно ни через один клиент YouTube.
+    /// Пробрасывает управление в единый диспетчер с ключом локализации.
+    /// </summary>
+    private async Task HandleVideoUnplayableAsync(VideoUnplayableException exception, bool isDuplicate)
+    {
+        Log.Error($"[Orchestrator] Video unplayable: {exception.VideoId} — {exception.Message}");
+
+        string recommendationKey = _youtube.AuthService.IsAuthenticated
+            ? "Recommendation_VideoUnavailable"
+            : "Recommendation_Login_403";
+
+        await DispatchPlaybackErrorAsync(exception, "Error_Video_Unavailable", null, isDuplicate,
+            recommendationKeyOverride: recommendationKey);
+    }
+
     private async Task HandleChunkFatalAsync(ChunkDownloadFatalException exception, bool isDuplicate)
     {
         Log.Error($"[Orchestrator] Chunk fatal: {exception.Reason} at chunk {exception.ChunkIndex}");
@@ -273,6 +291,7 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
         {
             StreamUnavailableException stream => !currentRaw.SequenceEqual(stream.VideoId.AsSpan()),
             LoginRequiredException login => !currentRaw.SequenceEqual(login.VideoId.AsSpan()),
+            VideoUnplayableException vp => !currentRaw.SequenceEqual(vp.VideoId.AsSpan()),
             ChunkDownloadFatalException chunk => !string.Equals(current.Id, chunk.TrackId, StringComparison.Ordinal),
             _ => false
         };
@@ -293,12 +312,14 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
     /// Универсальный диспетчер, обрабатывающий поведение на основе настроек воспроизведения.
     /// </summary>
     private async Task DispatchPlaybackErrorAsync(
-      Exception exception,
-      string messageOrKey,
-      List<AttemptRecord>? attempts = null,
-      bool skipNotification = false,
-      string? recommendationKeyOverride = null)
+        Exception exception,
+        string messageOrKey,
+        List<AttemptRecord>? attempts = null,
+        bool skipNotification = false,
+        string? recommendationKeyOverride = null)
     {
+        var (trackId, trackTitle) = GetCurrentTrackInfo();
+
         var policy = PlaybackErrorBehaviorMatrix.Resolve(
             _libraryService.Settings.Audio.CriticalErrorBehavior,
             _libraryService.Settings.Audio.PlaybackFailureBehavior);
@@ -316,8 +337,6 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
             Log.Debug($"[Orchestrator] Silently recovered duplicate error without UI notification: {messageOrKey}");
             return;
         }
-
-        var (trackId, trackTitle) = GetCurrentTrackInfo();
 
         bool isSslFailure = exception is YoutubeNetworkException { IsSslFailure: true }
                          || NetworkErrorHelper.IsSslOrTlsHandshakeFailure(exception);
@@ -454,6 +473,7 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
                 LoginRequiredException or
                 StreamUnavailableException or
                 ChunkDownloadFatalException or
+                VideoUnplayableException or
                 YoutubeNetworkException)
             {
                 return inner;
@@ -475,6 +495,7 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
             YoutubeNetworkException net => $"network_{net.ErrorType}",
             LoginRequiredException login => $"login_{login.VideoId}",
             StreamUnavailableException stream => $"stream_{stream.VideoId}_{stream.Reason}",
+            VideoUnplayableException vp => $"unplayable_{vp.VideoId}",
             ChunkDownloadFatalException chunk => $"chunk_{chunk.TrackId}_{chunk.Reason}",
             _ => $"generic_{exception.GetType().Name}_{exception.Message.GetHashCode()}"
         };
@@ -541,6 +562,9 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
                 LoginRequiredReason.MembersOnly => "Recommendation_MembersOnly",
                 _ => "Recommendation_Login"
             },
+            VideoUnplayableException => isAuthenticated
+                ? "Recommendation_VideoUnavailable"
+                : "Recommendation_Login_403",
             StreamUnavailableException stream => GetStreamRecommendation(stream, isAuthenticated),
             ChunkDownloadFatalException chunk => GetChunkRecommendation(chunk, isAuthenticated),
             _ => null

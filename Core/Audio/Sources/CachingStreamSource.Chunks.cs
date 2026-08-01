@@ -710,26 +710,43 @@ public sealed partial class CachingStreamSource
     /// <summary>
     /// Гарантирует наличие диапазона данных, предотвращая бесконечные ретраи (Retry Storm).
     /// </summary>
-    private async Task<RangeDownloadResult> EnsureRangeAsync(long position, int minimumLength, CancellationToken ct, bool isCritical = false)
+    private async Task<RangeDownloadResult> EnsureRangeAsync(
+        long position,
+        int minimumLength,
+        CancellationToken ct,
+        bool isCritical = false)
     {
-        if (position < 0 || position >= _contentLength) return RangeDownloadResult.OutOfRange;
-        if (minimumLength <= 0) return RangeDownloadResult.Success;
+        if (position < 0 || position >= _contentLength)
+            return RangeDownloadResult.OutOfRange;
+
+        if (minimumLength <= 0)
+            return RangeDownloadResult.Success;
 
         minimumLength = (int)Math.Min(minimumLength, _contentLength - position);
 
-        if (IsRangeLocallyAvailable(position, minimumLength)) return RangeDownloadResult.Success;
+        if (IsRangeLocallyAvailable(position, minimumLength))
+            return RangeDownloadResult.Success;
 
         ct.ThrowIfCancellationRequested();
 
         int maxAttempts = _config.MaxNetworkRetries;
         int chunkIoExceptions = 0;
+
+        // Флаг: опубликовали ли мы уже предупреждение через PublishSourceWarning.
+        // Нужен чтобы не спамить одним и тем же сообщением при каждом retry.
         bool warningPublished = false;
+
+        // Счётчик последовательных refresh, которые не дали нового URL.
+        // Если набрать слишком много — смысла ретраить нет.
+        int consecutiveStaleRefreshes = 0;
+        const int MaxStaleRefreshesBeforeGivingUp = 3;
 
         for (int attempt = 0; attempt < maxAttempts; attempt++)
         {
             ct.ThrowIfCancellationRequested();
 
-            if (IsRangeLocallyAvailable(position, minimumLength)) return RangeDownloadResult.Success;
+            if (IsRangeLocallyAvailable(position, minimumLength))
+                return RangeDownloadResult.Success;
 
             if (TryGetOverlappingActiveDownload(position, minimumLength, out var overlapping))
             {
@@ -745,76 +762,273 @@ public sealed partial class CachingStreamSource
             var candidate = new ActiveRangeDownload(plan.Start, plan.Length, ownerLazy);
             var actual = RegisterOrGetActiveDownload(candidate);
 
-            if (ReferenceEquals(actual, candidate))
+            if (!ReferenceEquals(actual, candidate))
             {
-                RangeDownloadResult result;
-                try
+                // Другой caller уже регистрирует этот же диапазон — ждём его.
+                await WaitForActiveDownloadAsync(actual.LazyTask.Value, ct).ConfigureAwait(false);
+                continue;
+            }
+
+            // Мы владелец download task — запускаем и обрабатываем результат
+            RangeDownloadResult result;
+            try
+            {
+                result = await actual.LazyTask.Value.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Epoch сменился (например, seek отменил старые загрузки) — это нормально,
+                // просто повторяем попытку с новым download token.
+                continue;
+            }
+            finally
+            {
+                RemoveActiveDownloadIfOwner(plan.Start, actual);
+            }
+
+            switch (result)
+            {
+                case RangeDownloadResult.Success:
+                    return RangeDownloadResult.Success;
+
+                // 403 Forbidden
+                case RangeDownloadResult.Forbidden403:
                 {
-                    result = await actual.LazyTask.Value.ConfigureAwait(false);
+                    // Сообщаем наружу (через PlaybackErrorOrchestrator) о проблеме
+                    // ровно один раз — чтобы UI мог показать индикатор или запустить recovery.
+                    if (isCritical && !warningPublished)
+                    {
+                        warningPublished = true;
+                        PublishSourceWarning(
+                            new UnauthorizedAccessException(
+                                $"Critical range {plan.Start}-{plan.Start + plan.Length - 1L} " +
+                                $"received HTTP 403 and requires stream URL refresh"));
+                    }
+
+                    // При 403 отменяем ВСЕ параллельные preload-запросы:
+                    // они используют тот же мёртвый URL и тоже получат 403.
+                    // Гарантирует что после получения нового URL не будет race
+                    // между старыми in-flight запросами и новыми.
+                    ResetDownloadEpoch();
+
+                    Log.Warn($"[CachingSource] [{_trackId}] HTTP 403 on range {plan.Start}-{plan.Start + plan.Length - 1L}. " +
+                            $"Attempt {attempt + 1}/{maxAttempts}. Refreshing URL...");
+
+                    UrlRefreshOutcome outcome;
+                    try
+                    {
+                        outcome = await CoordinatedRefreshAsync(ct).ConfigureAwait(false);
+                    }
+                    catch (ChunkDownloadFatalException)
+                    {
+                        // Circuit breaker открылся — пробрасываем fatal наверх.
+                        throw;
+                    }
+
+                    switch (outcome)
+                    {
+                        case UrlRefreshOutcome.Success:
+                            // URL реально обновился — продолжаем retry.
+                            consecutiveStaleRefreshes = 0;
+                            Log.Info($"[CachingSource] [{_trackId}] URL refreshed, retrying range {plan.Start}");
+                            continue;
+
+                        case UrlRefreshOutcome.StaleToken:
+                            // URL изменился, но n-token тот же — скорее всего session cache
+                            // вернул старый manifest. Следующий retry скорее всего снова 403.
+                            // Даём небольшую задержку перед следующей попыткой.
+                            consecutiveStaleRefreshes++;
+                            Log.Warn($"[CachingSource] [{_trackId}] Stale n-token after refresh " +
+                                    $"({consecutiveStaleRefreshes}/{MaxStaleRefreshesBeforeGivingUp}). " +
+                                    $"Backing off before retry...");
+
+                            if (consecutiveStaleRefreshes >= MaxStaleRefreshesBeforeGivingUp)
+                            {
+                                // Слишком много refresh с одинаковым token — сдаёмся.
+                                Log.Error($"[CachingSource] [{_trackId}] Too many stale refreshes. " +
+                                        $"Escalating to fatal.");
+                                throw CreateReadAtFatalException(position);
+                            }
+
+                            // Exponential backoff: 1s, 2s, 4s
+                            int backoffMs = (int)Math.Pow(2, consecutiveStaleRefreshes - 1) * 1000;
+                            await Task.Delay(backoffMs, ct).ConfigureAwait(false);
+                            continue;
+
+                        case UrlRefreshOutcome.NoChange:
+                            // Refresher не вернул новый URL — API недоступен или session expired.
+                            // Нет смысла немедленно ретраить — ждём подольше.
+                            consecutiveStaleRefreshes++;
+                            Log.Warn($"[CachingSource] [{_trackId}] Refresh returned no new URL. " +
+                                    $"Waiting before retry ({attempt + 1}/{maxAttempts})...");
+
+                            // Увеличенный backoff при полном отсутствии URL: 2s, 4s, 8s
+                            int noUrlBackoffMs = (int)Math.Pow(2, consecutiveStaleRefreshes) * 1000;
+                            await Task.Delay(Math.Min(noUrlBackoffMs, 8000), ct).ConfigureAwait(false);
+                            continue;
+
+                        default:
+                            continue;
+                    }
                 }
-                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+
+                // Network Error
+                case RangeDownloadResult.NetworkError:
                 {
+                    chunkIoExceptions++;
+
+                    if (isCritical && !warningPublished && chunkIoExceptions >= 2)
+                    {
+                        warningPublished = true;
+                        PublishSourceWarning(
+                            new IOException(
+                                $"Critical range {plan.Start}-{plan.Start + plan.Length - 1L} " +
+                                $"failed repeatedly and playback may stall"));
+                    }
+
+                    // После двух сетевых ошибок подряд — URL мог протухнуть или CDN умер.
+                    // Пробуем сменить URL и сбросить epoch как при 403.
+                    if (chunkIoExceptions >= 2)
+                    {
+                        Log.Warn($"[CachingSource] [{_trackId}] Repeated network errors " +
+                                $"({chunkIoExceptions}). Forcing URL refresh and epoch reset...");
+
+                        ResetDownloadEpoch();
+                        try
+                        {
+                            await CoordinatedRefreshAsync(ct).ConfigureAwait(false);
+                        }
+                        catch (ChunkDownloadFatalException) { throw; }
+                    }
+
+                    // Quadratic backoff: 100ms, 400ms, 900ms, 1600ms, 2000ms (cap)
+                    int delay = (int)Math.Min(2000, 100 * Math.Pow(attempt + 1, 2));
+                    await Task.Delay(delay, ct).ConfigureAwait(false);
                     continue;
                 }
-                finally
-                {
-                    RemoveActiveDownloadIfOwner(plan.Start, actual);
-                }
 
-                switch (result)
-                {
-                    case RangeDownloadResult.Success:
-                        return RangeDownloadResult.Success;
+                case RangeDownloadResult.Cancelled:
+                    ct.ThrowIfCancellationRequested();
+                    return result;
 
-                    case RangeDownloadResult.Forbidden403:
-                        if (isCritical && !warningPublished)
-                        {
-                            warningPublished = true;
-                            PublishSourceWarning(
-                                new UnauthorizedAccessException(
-                                    $"Critical range {plan.Start}-{plan.Start + plan.Length - 1L} received HTTP 403 and requires stream URL refresh"));
-                        }
-
-                        await CoordinatedRefreshAsync(ct).ConfigureAwait(false);
-                        continue;
-
-                    case RangeDownloadResult.NetworkError:
-                        chunkIoExceptions++;
-
-                        if (isCritical && !warningPublished && chunkIoExceptions >= 2)
-                        {
-                            warningPublished = true;
-                            PublishSourceWarning(
-                                new IOException(
-                                    $"Critical range {plan.Start}-{plan.Start + plan.Length - 1L} failed repeatedly and playback may stall"));
-                        }
-
-                        if (chunkIoExceptions >= 2)
-                        {
-                            Log.Warn($"[CachingSource] Chunk {plan.Start} failed repeatedly. Forcing URL refresh...");
-                            await CoordinatedRefreshAsync(ct).ConfigureAwait(false);
-                            ResetDownloadEpoch();
-                        }
-
-                        int delay = (int)Math.Min(2000, 100 * Math.Pow(attempt + 1, 2));
-                        await Task.Delay(delay, ct).ConfigureAwait(false);
-                        continue;
-
-                    case RangeDownloadResult.Cancelled:
-                        ct.ThrowIfCancellationRequested();
-                        return result;
-
-                    default:
-                        return result;
-                }
-            }
-            else
-            {
-                await WaitForActiveDownloadAsync(actual.LazyTask.Value, ct).ConfigureAwait(false);
+                default:
+                    return result;
             }
         }
 
+        // Исчерпали все попытки — сигнализируем fatal.
         return RangeDownloadResult.NetworkError;
+    }
+
+    /// <summary>
+    /// Гарантирует наличие валидного continuation URL перед сетевой загрузкой.
+    /// Реализует single-flight модель: если URL уже есть — возвращает сразу,
+    /// если нет — либо ждёт внешнего attach, либо запускает самостоятельный acquire.
+    /// </summary>
+    /// <param name="ct">Токен отмены.</param>
+    /// <returns><c>true</c> если URL доступен; <c>false</c> если получить не удалось.</returns>
+    private async Task<bool> EnsureUrlAvailableAsync(CancellationToken ct)
+    {
+        // URL уже есть — ничего делать не нужно.
+        if (!string.IsNullOrWhiteSpace(_currentUrl))
+            return true;
+
+        Log.Debug($"[CachingSource] [{_trackId}] EnsureUrlAvailable: no URL yet, " +
+                $"hasAcquirer={_urlAcquirer != null}");
+
+        Task<string?> waitTask;
+        bool isInitiator = false;
+
+        lock (_continuationLock)
+        {
+            // Перепроверяем под локом — мог прийти через TryAttachContinuationUrl.
+            if (!string.IsNullOrWhiteSpace(_currentUrl))
+                return true;
+
+            if (_continuationUrlTcs != null)
+            {
+                // Кто-то уже запустил resolution — просто ждём его результата.
+                waitTask = _continuationUrlTcs.Task;
+            }
+            else
+            {
+                // Мы первые — создаём promise и становимся initiator.
+                var tcs = new TaskCompletionSource<string?>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _continuationUrlTcs = tcs;
+                waitTask = tcs.Task;
+                isInitiator = true;
+            }
+        }
+
+        // Initiator запускает фактическое получение URL в фоне.
+        if (isInitiator && _urlAcquirer != null)
+            _ = ResolveContinuationUrlSingleFlightAsync(ct);
+
+        try
+        {
+            await waitTask.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Если URL успел прийти до отмены — считаем успехом.
+            return !string.IsNullOrWhiteSpace(_currentUrl);
+        }
+
+        Log.Info($"[CachingSource] [{_trackId}] EnsureUrlAvailable resolved: " +
+                $"hasUrl={!string.IsNullOrWhiteSpace(_currentUrl)}");
+
+        // Защита от retry-шторма: если URL так и не получен — делаем паузу,
+        // чтобы preload loop не уходил в бесконечный tight-retry.
+        if (string.IsNullOrWhiteSpace(_currentUrl))
+        {
+            Log.Warn($"[CachingSource] [{_trackId}] URL acquirer returned null. " +
+                    $"Delaying to prevent retry storm...");
+            try { await Task.Delay(1500, ct).ConfigureAwait(false); } catch { }
+        }
+
+        return !string.IsNullOrWhiteSpace(_currentUrl);
+    }
+
+    /// <summary>
+    /// Single-flight resolution continuation URL через <see cref="_urlAcquirer"/>.
+    /// Результат доставляется через <see cref="_continuationUrlTcs"/>.
+    /// </summary>
+    private async Task ResolveContinuationUrlSingleFlightAsync(CancellationToken ct)
+    {
+        string? resolvedUrl = null;
+
+        try
+        {
+            Log.Debug($"[CachingSource] [{_trackId}] Acquiring continuation URL (single-flight)...");
+            resolvedUrl = await _urlAcquirer!(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Log.Warn($"[CachingSource] [{_trackId}] Continuation URL resolution failed: {ex.Message}");
+        }
+
+        TaskCompletionSource<string?>? tcs;
+
+        lock (_continuationLock)
+        {
+            tcs = _continuationUrlTcs;
+            _continuationUrlTcs = null;
+
+            // Принимаем URL только если source ещё не получил его из другого источника.
+            if (!string.IsNullOrEmpty(resolvedUrl) && string.IsNullOrWhiteSpace(_currentUrl))
+            {
+                _currentUrl = resolvedUrl;
+
+                if (_cacheEntry != null)
+                    _cacheEntry.OriginalUrl = resolvedUrl;
+
+                Log.Info($"[CachingSource] [{_trackId}] Continuation URL resolved via single-flight");
+            }
+        }
+
+        tcs?.TrySetResult(resolvedUrl);
     }
 
     #endregion
@@ -1122,163 +1336,208 @@ public sealed partial class CachingStreamSource
     #region URL Refresh
 
     /// <summary>
-    /// Гарантирует наличие валидного continuation URL перед сетевой загрузкой.
-    /// Реализует single-flight модель ожидания внешнего URL или самостоятельного разрешения.
+    /// Результат попытки обновления stream URL.
     /// </summary>
-    /// <param name="ct">Токен отмены.</param>
-    /// <returns><c>true</c>, если URL доступен; иначе <c>false</c>.</returns>
-    private async Task<bool> EnsureUrlAvailableAsync(CancellationToken ct)
+    private enum UrlRefreshOutcome
     {
-        if (!string.IsNullOrWhiteSpace(_currentUrl))
-            return true;
+        /// <summary>URL успешно обновлён, новый n-token отличается от старого.</summary>
+        Success,
 
-        Log.Debug($"[CachingSource] EnsureUrlAvailableAsync: track={_trackId}, hasUrl=false, hasAcquirer={_urlAcquirer != null}");
+        /// <summary>
+        /// URL получен, но n-token не изменился — вероятно, кэш вернул протухший URL.
+        /// Retry с этим URL приведёт к повторному 403.
+        /// </summary>
+        StaleToken,
 
-        Task<string?> waitTask;
-        bool isInitiator = false;
+        /// <summary>
+        /// URL не изменился вообще — refresher вернул null или тот же URL.
+        /// </summary>
+        NoChange,
 
-        lock (_continuationLock)
-        {
-            if (!string.IsNullOrWhiteSpace(_currentUrl))
-                return true;
-
-            if (_continuationUrlTcs != null)
-            {
-                waitTask = _continuationUrlTcs.Task;
-            }
-            else
-            {
-                var tcs = new TaskCompletionSource<string?>(
-                    TaskCreationOptions.RunContinuationsAsynchronously);
-                _continuationUrlTcs = tcs;
-                waitTask = tcs.Task;
-                isInitiator = true;
-            }
-        }
-
-        // Если источник настроен на самостоятельное получение URL (acquirer != null), 
-        // инициатор запускает фоновый процесс.
-        if (isInitiator && _urlAcquirer != null)
-        {
-            _ = ResolveContinuationUrlSingleFlightAsync(ct);
-        }
-
-        try
-        {
-            // Ждём разрешение URL (изнутри или снаружи).
-            await waitTask.WaitAsync(ct).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            return !string.IsNullOrWhiteSpace(_currentUrl);
-        }
-
-        Log.Info($"[CachingSource] EnsureUrlAvailableAsync resolved: track={_trackId}, hasUrl={!string.IsNullOrWhiteSpace(_currentUrl)}");
-
-        // ЗАЩИТА ОТ RETRY-ШТОРМА: Если ссылка так и не была получена (API упал / вернул null),
-        // делаем принудительную задержку, чтобы предотвратить Infinite Loop в вызывающем preload-цикле.
-        if (string.IsNullOrWhiteSpace(_currentUrl))
-        {
-            Log.Warn($"[CachingSource] URL acquirer returned null. Delaying to prevent retry storm...");
-            try { await Task.Delay(1500, ct).ConfigureAwait(false); } catch { }
-        }
-
-        return !string.IsNullOrWhiteSpace(_currentUrl);
+        /// <summary>
+        /// Circuit breaker открыт: слишком много последовательных неудачных refresh.
+        /// Дальнейшие попытки бессмысленны.
+        /// </summary>
+        CircuitOpen
     }
 
     /// <summary>
-    /// Single-flight resolution continuation URL через <see cref="_urlRefresher"/>.
-    /// Результат доставляется через <see cref="_continuationUrlTcs"/>.
-    /// Если URL уже был прикреплён через <see cref="TryAttachContinuationUrl"/>
-    /// до завершения этого метода, <see cref="TaskCompletionSource{TResult}.TrySetResult"/>
-    /// просто вернёт <c>false</c> — без побочных эффектов.
+    /// Координирует обновление stream URL при получении HTTP 403.
     /// </summary>
-    private async Task ResolveContinuationUrlSingleFlightAsync(CancellationToken ct)
+    /// <param name="ct">Токен отмены.</param>
+    /// <returns>Исход попытки обновления URL.</returns>
+    /// <exception cref="ChunkDownloadFatalException">
+    /// Выбрасывается когда circuit breaker открыт (слишком много failures подряд).
+    /// </exception>
+    private async Task<UrlRefreshOutcome> CoordinatedRefreshAsync(CancellationToken ct)
     {
-        string? resolvedUrl = null;
-
-        try
-        {
-            Log.Debug("[CachingSource] Acquiring continuation URL (single-flight)...");
-            resolvedUrl = await _urlAcquirer!(ct).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            Log.Warn($"[CachingSource] Continuation URL resolution failed: {ex.Message}");
-        }
-
-        TaskCompletionSource<string?>? tcs;
-
-        lock (_continuationLock)
-        {
-            tcs = _continuationUrlTcs;
-            _continuationUrlTcs = null;
-
-            if (!string.IsNullOrEmpty(resolvedUrl) && string.IsNullOrWhiteSpace(_currentUrl))
-            {
-                _currentUrl = resolvedUrl;
-                _cacheEntry?.OriginalUrl = resolvedUrl;
-
-                Log.Info("[CachingSource] Continuation URL resolved via single-flight");
-            }
-        }
-
-        tcs?.TrySetResult(resolvedUrl);
-    }
-
-    private async Task CoordinatedRefreshAsync(CancellationToken ct)
-    {
+        // Circuit Breaker
+        // Если refresh уже падал MaxRefreshFailuresBeforeCircuitBreak раз подряд —
+        // дальнейшие попытки только провоцируют bot detection на стороне YouTube.
         int refreshFailures = Volatile.Read(ref _consecutiveRefreshFailures);
         if (refreshFailures >= MaxRefreshFailuresBeforeCircuitBreak)
-            throw new ChunkDownloadFatalException($"URL refresh circuit breaker OPEN: {refreshFailures} consecutive failures", chunkIndex: -1, consecutiveFailures: Volatile.Read(ref _consecutive403Count), reason: ChunkDownloadFailureReason.Forbidden403, trackId: _trackId, httpStatusCode: 403);
-
-        if (_disposed) return;
-
-        bool acquired;
-        try { acquired = await _refreshLock.WaitAsync(0, ct).ConfigureAwait(false); } catch (ObjectDisposedException) { return; }
-
-        if (!acquired)
         {
-            Log.Debug("[CachingSource] Waiting for concurrent refresh...");
-            try { await _refreshLock.WaitAsync(ct).ConfigureAwait(false); _refreshLock.Release(); } catch (ObjectDisposedException) { return; }
-
-            if (Volatile.Read(ref _consecutiveRefreshFailures) >= MaxRefreshFailuresBeforeCircuitBreak)
-                throw new ChunkDownloadFatalException("URL refresh circuit breaker OPEN after concurrent refresh", chunkIndex: -1, consecutiveFailures: Volatile.Read(ref _consecutive403Count), reason: ChunkDownloadFailureReason.Forbidden403, trackId: _trackId, httpStatusCode: 403);
-
-            await Task.Delay(_config.PostRefreshDelayMs, ct).ConfigureAwait(false);
-            return;
+            throw new ChunkDownloadFatalException(
+                message: $"URL refresh circuit breaker open after {refreshFailures} consecutive failures",
+                chunkIndex: -1,
+                consecutiveFailures: Volatile.Read(ref _consecutive403Count),
+                reason: ChunkDownloadFailureReason.Forbidden403,
+                trackId: _trackId,
+                httpStatusCode: 403);
         }
+
+        if (_disposed)
+            return UrlRefreshOutcome.NoChange;
+
+        // Single-Flight: пробуем взять lock немедленно (без ожидания)
+        bool isInitiator;
+        try
+        {
+            isInitiator = await _refreshLock.WaitAsync(0, ct).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            return UrlRefreshOutcome.NoChange;
+        }
+
+        // Waiter path: кто-то уже делает refresh — ждём его завершения
+        if (!isInitiator)
+        {
+            return await WaitForConcurrentRefreshAsync(ct).ConfigureAwait(false);
+        }
+
+        // Initiator path: мы выиграли lock — делаем фактический refresh
+        try
+        {
+            return await ExecuteRefreshAsync(ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Всегда освобождаем lock — иначе все waiters зависнут навсегда.
+            try { _refreshLock.Release(); }
+            catch (ObjectDisposedException) { }
+        }
+    }
+
+    /// <summary>
+    /// Ожидает завершения concurrent refresh, инициированного другим caller'ом,
+    /// и возвращает его результат.
+    /// </summary>
+    private async Task<UrlRefreshOutcome> WaitForConcurrentRefreshAsync(CancellationToken ct)
+    {
+        Log.Debug($"[CachingSource] [{_trackId}] Waiting for concurrent URL refresh...");
 
         try
         {
-            var elapsed = DateTime.UtcNow - _lastRefreshTime;
-            if (elapsed.TotalMilliseconds < _config.RefreshCooldownMs)
-            {
-                int waitMs = _config.RefreshCooldownMs - (int)elapsed.TotalMilliseconds;
-                Log.Debug($"[CachingSource] Refresh cooldown: {waitMs}ms");
-                await Task.Delay(waitMs, ct).ConfigureAwait(false);
-            }
+            // Ждём пока initiator закончит refresh и отпустит lock.
+            await _refreshLock.WaitAsync(ct).ConfigureAwait(false);
+            _refreshLock.Release();
+        }
+        catch (ObjectDisposedException)
+        {
+            return UrlRefreshOutcome.NoChange;
+        }
 
-            var previousUrl = _currentUrl;
-            await RefreshUrlAsync(ct).ConfigureAwait(false);
-            _lastRefreshTime = DateTime.UtcNow;
-            Volatile.Write(ref _consecutive403Count, 0);
-            Log.Info("[CachingSource] 403 counter reset after URL refresh");
+        // Если после завершения concurrent refresh circuit breaker открылся —
+        // сигнализируем об этом, чтобы не делать ещё один безнадёжный retry.
+        if (Volatile.Read(ref _consecutiveRefreshFailures) >= MaxRefreshFailuresBeforeCircuitBreak)
+        {
+            throw new ChunkDownloadFatalException(
+                message: "URL refresh circuit breaker open after waiting for concurrent refresh",
+                chunkIndex: -1,
+                consecutiveFailures: Volatile.Read(ref _consecutive403Count),
+                reason: ChunkDownloadFailureReason.Forbidden403,
+                trackId: _trackId,
+                httpStatusCode: 403);
+        }
 
-            var newNToken = UrlEx.TryGetQueryParameterValue(_currentUrl, "n");
-            var oldNToken = UrlEx.TryGetQueryParameterValue(previousUrl, "n");
+        // Небольшой delay после чужого refresh — даём CDN время "переварить" новый URL
+        // прежде чем мы начнём слать range-запросы.
+        await Task.Delay(_config.PostRefreshDelayMs, ct).ConfigureAwait(false);
 
-            if (!string.IsNullOrEmpty(newNToken) && string.Equals(newNToken, oldNToken, StringComparison.Ordinal))
-            {
-                int failures = Interlocked.Increment(ref _consecutiveRefreshFailures);
-                Log.Warn($"[CachingSource] n-token unchanged after refresh (attempt {failures}/{MaxRefreshFailuresBeforeCircuitBreak})");
-            }
-            else Volatile.Write(ref _consecutiveRefreshFailures, 0);
+        // Проверяем реальный результат: сбросился ли счётчик 403?
+        // Если да — concurrent refresh был успешным, URL сменился.
+        bool concurrentRefreshSucceeded = Volatile.Read(ref _consecutive403Count) == 0;
+
+        Log.Debug($"[CachingSource] [{_trackId}] Concurrent refresh result: " +
+                $"{(concurrentRefreshSucceeded ? "success" : "failed")}");
+
+        return concurrentRefreshSucceeded
+            ? UrlRefreshOutcome.Success
+            : UrlRefreshOutcome.NoChange;
+    }
+
+    /// <summary>
+    /// Выполняет фактическое обновление URL (только initiator path).
+    /// </summary>
+    private async Task<UrlRefreshOutcome> ExecuteRefreshAsync(CancellationToken ct)
+    {
+        // Cooldown
+        // Защита от refresh-шторма: если последний refresh был совсем недавно —
+        // ждём cooldown. Это особенно важно когда несколько chunk-загрузок
+        // параллельно получают 403 и каждая пытается запустить свой refresh.
+        var elapsed = DateTime.UtcNow - _lastRefreshTime;
+        if (elapsed.TotalMilliseconds < _config.RefreshCooldownMs)
+        {
+            int waitMs = _config.RefreshCooldownMs - (int)elapsed.TotalMilliseconds;
+            Log.Debug($"[CachingSource] [{_trackId}] Refresh cooldown: waiting {waitMs}ms");
+            await Task.Delay(waitMs, ct).ConfigureAwait(false);
+        }
+
+        // Запоминаем текущий URL ДО refresh — нужен для сравнения после.
+        string? urlBeforeRefresh = _currentUrl;
+        string? nTokenBefore = UrlEx.TryGetQueryParameterValue(urlBeforeRefresh, "n");
+
+        Log.Info($"[CachingSource] [{_trackId}] Executing URL refresh. " +
+                $"Current n-token: {nTokenBefore?[..Math.Min(nTokenBefore.Length, 10)] ?? "MISSING"}...");
+
+        await RefreshUrlAsync(ct).ConfigureAwait(false);
+        _lastRefreshTime = DateTime.UtcNow;
+
+        string? urlAfterRefresh = _currentUrl;
+        string? nTokenAfter = UrlEx.TryGetQueryParameterValue(urlAfterRefresh, "n");
+
+        // Проверка результата refresh
+
+        // Случай 1: refresher вернул null или URL не изменился вообще.
+        // Это происходит когда: API недоступен, session expired, или refresher не настроен.
+        bool urlActuallyChanged = !string.Equals(urlBeforeRefresh, urlAfterRefresh, StringComparison.Ordinal)
+                                && !string.IsNullOrWhiteSpace(urlAfterRefresh);
+
+        if (!urlActuallyChanged)
+        {
+            int failures = Interlocked.Increment(ref _consecutiveRefreshFailures);
+            Log.Warn($"[CachingSource] [{_trackId}] Refresh returned no new URL " +
+                    $"(failure {failures}/{MaxRefreshFailuresBeforeCircuitBreak})");
+            return UrlRefreshOutcome.NoChange;
+        }
+
+        // Случай 2: URL изменился, но n-token остался прежним.
+        // Это значит YouTube вернул тот же подписанный URL через session/memory cache.
+        // Retry с ним снова приведёт к 403.
+        bool nTokenChanged = !string.IsNullOrEmpty(nTokenAfter)
+                            && !string.Equals(nTokenBefore, nTokenAfter, StringComparison.Ordinal);
+
+        if (!nTokenChanged && !string.IsNullOrEmpty(nTokenBefore))
+        {
+            int failures = Interlocked.Increment(ref _consecutiveRefreshFailures);
+            Log.Warn($"[CachingSource] [{_trackId}] Refresh got new URL but n-token unchanged " +
+                    $"— likely stale session cache (failure {failures}/{MaxRefreshFailuresBeforeCircuitBreak})");
 
             await Task.Delay(_config.PostRefreshDelayMs, ct).ConfigureAwait(false);
+            return UrlRefreshOutcome.StaleToken;
         }
-        finally { try { _refreshLock.Release(); } catch (ObjectDisposedException) { } }
+
+        // Случай 3: Успех — URL изменился И n-token обновился.
+        // Сбрасываем счётчики ТОЛЬКО здесь, когда refresh реально помог.
+        Volatile.Write(ref _consecutive403Count, 0);
+        Volatile.Write(ref _consecutiveRefreshFailures, 0);
+
+        Log.Info($"[CachingSource] [{_trackId}] URL refresh successful. " +
+                $"New n-token: {nTokenAfter?[..Math.Min(nTokenAfter.Length, 10)] ?? "?"}...");
+
+        await Task.Delay(_config.PostRefreshDelayMs, ct).ConfigureAwait(false);
+        return UrlRefreshOutcome.Success;
     }
 
     #endregion

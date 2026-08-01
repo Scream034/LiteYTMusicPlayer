@@ -15,7 +15,7 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     /// <summary>
     /// Текущая версия схемы metadata кэша.
     /// </summary>
-    private const int CurrentSchemaVersion = 3;
+    private const int CurrentSchemaVersion = 4;
 
     /// <summary>
     /// Обёртка индекса кэша с версионированием схемы.
@@ -1117,6 +1117,7 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
             bool needsMigration = loadedSchemaVersion < CurrentSchemaVersion;
             bool needsLufsMigration = loadedSchemaVersion < 3;
+            bool needsBitrateMigration = loadedSchemaVersion < 4;
             int migratedComplete = 0;
             int droppedPartial = 0;
 
@@ -1135,6 +1136,46 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
                 {
                     entry.IntegratedLufs = null;
                     entry.IntegratedLufsSource = 0;
+                }
+
+                if (needsBitrateMigration && !string.IsNullOrEmpty(entry.CacheKey) && entry.Bitrate > 0)
+                {
+                    string expectedKey = AudioSourceFactory.BuildCacheKey(entry.TrackId, entry.Format, entry.Bitrate);
+                    if (!string.Equals(entry.CacheKey, expectedKey, StringComparison.Ordinal))
+                    {
+                        string oldPath = GetCachePath(entry.CacheKey);
+                        string newPath = GetCachePath(expectedKey);
+
+                        if (File.Exists(oldPath) && !File.Exists(newPath))
+                        {
+                            try { File.Move(oldPath, newPath); }
+                            catch (Exception ex) { Log.Warn($"[AudioCache] Bitrate bucket migration move failed: {ex.Message}"); }
+                        }
+
+                        // Переиндексация: удаляем старый ключ, entry перезагрузится с новым
+                        RemoveFromTrackIndex(entry.TrackId, entry.CacheKey);
+                        entry = new AudioCacheEntry
+                        {
+                            CacheKey = expectedKey,
+                            TrackId = entry.TrackId,
+                            OriginalUrl = entry.OriginalUrl,
+                            TotalSize = entry.TotalSize,
+                            Format = entry.Format,
+                            Codec = entry.Codec,
+                            Bitrate = entry.Bitrate,
+                            DurationMs = entry.DurationMs,
+                            AlignmentBytes = entry.AlignmentBytes,
+                            CreatedAt = entry.CreatedAt,
+                            LastAccessedAt = entry.LastAccessedAt,
+                            CompletedAt = entry.CompletedAt,
+                            IsComplete = entry.IsComplete,
+                            ActualFileSize = entry.ActualFileSize,
+                            IntegratedLufs = entry.IntegratedLufs,
+                            IntegratedLufsSource = entry.IntegratedLufsSource,
+                            DownloadedRangesData = entry.DownloadedRangesData
+                        };
+                        entries[i] = entry;
+                    }
                 }
 
                 entry.RestoreAfterLoad();
@@ -1160,11 +1201,12 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
                 AddToTrackIndex(entry.TrackId, entry.CacheKey);
             }
 
-            if (needsMigration || needsLufsMigration || migratedComplete > 0)
+            if (needsMigration || needsLufsMigration || needsBitrateMigration || migratedComplete > 0)
             {
                 Log.Info($"[AudioCache] Schema migration v{loadedSchemaVersion}→v{CurrentSchemaVersion}: " +
                          $"{migratedComplete} complete restored, {droppedPartial} partial reset" +
-                         (needsLufsMigration ? $", {entries.Count} normalization metadata reset (LUFS model)" : ""));
+                         (needsLufsMigration ? $", {entries.Count} normalization metadata reset (LUFS model)" : "") +
+                         (needsBitrateMigration ? ", bitrate bucket remapped" : ""));
                 _ = SaveIndexAsync();
             }
 

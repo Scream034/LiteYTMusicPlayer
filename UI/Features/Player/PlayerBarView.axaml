@@ -481,14 +481,34 @@
                             IsVisible="{Binding ShowStreamInfo}">
                             <Button.Flyout>
                                 <Flyout Placement="Top">
-                                    <!-- Задали MinWidth=250 под ширину нижней кнопки панели -->
                                     <StackPanel MinWidth="250" Spacing="6" Margin="4">
-                                        <!-- Отцентрированный заголовок -->
-                                        <TextBlock Margin="0,4,0,8"
-                                            FontWeight="Bold"
-                                            FontSize="13"
-                                            HorizontalAlignment="Center"
-                                            Text="{Binding L[Stream_SelectQuality]}" />
+
+                                        <!-- Шапка с заголовком и кнопкой принудительного обновления -->
+                                        <Grid ColumnDefinitions="*,Auto" Margin="4,2,4,6">
+                                            <TextBlock Grid.Column="0"
+                                                FontWeight="Bold"
+                                                FontSize="13"
+                                                HorizontalAlignment="Left"
+                                                VerticalAlignment="Center"
+                                                Text="{Binding L[Stream_SelectQuality]}" />
+
+                                            <Button Grid.Column="1"
+                                                Width="26" Height="26"
+                                                Classes="icon-btn"
+                                                Command="{Binding ForceLoadFormatsCommand}"
+                                                ToolTip.Tip="{Binding L[Stream_RefreshFormats]}"
+                                                HorizontalAlignment="Right"
+                                                VerticalAlignment="Center"
+                                                CornerRadius="13">
+                                                <Panel Width="14" Height="14">
+                                                    <PathIcon Width="14" Height="14"
+                                                        Data="{StaticResource Icon.Refresh}"
+                                                        Classes.spinning="{Binding IsFormatsLoading}"
+                                                        HorizontalAlignment="Center"
+                                                        VerticalAlignment="Center" />
+                                                </Panel>
+                                            </Button>
+                                        </Grid>
 
                                         <StackPanel Orientation="Horizontal" Spacing="10"
                                             Margin="4,12"

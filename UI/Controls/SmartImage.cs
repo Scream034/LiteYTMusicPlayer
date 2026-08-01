@@ -112,16 +112,6 @@ public static class SmartImage
     /// <summary>
     /// Запускает загрузку изображения для контрола. Вызывается при изменении
     /// <see cref="SourceProperty"/> или <see cref="QualityProperty"/>.
-    ///
-    /// <para><b>Гард Quality == 0:</b> при материализации DataTemplate Avalonia применяет
-    /// свойства последовательно — <c>Source</c> раньше <c>Quality</c>. В момент
-    /// <c>SourceProperty.Changed</c> значение <c>QualityProperty</c> равно
-    /// <c>default(ImageQuality) = 0</c>. Без гарда <c>GetImageAsync(url, decodeWidth: 0)</c>
-    /// попадает в ветку <c>new Bitmap(stream)</c> (полноразмерный bitmap вместо
-    /// <c>DecodeToWidth</c>), после чего <c>QualityProperty.Changed</c> запускает второй
-    /// BeginLoad, отменяющий первый. Гард гарантирует единственный корректный запуск:
-    /// для нового контейнера — из <c>QualityProperty.Changed</c>;
-    /// для рециклированного — из <c>SourceProperty.Changed</c> (Quality уже установлен).</para>
     /// </summary>
     private static async void BeginLoad(Image image)
     {
@@ -129,7 +119,7 @@ public static class SmartImage
         // Дожидаемся QualityProperty.Changed, который вызовет BeginLoad с корректным quality.
         if (GetQuality(image) == 0) return;
 
-        // ═══ Отменяем предыдущую pending-загрузку (рециклинг элемента) ═══
+        // Отменяем предыдущую pending-загрузку (рециклинг элемента)
         if (_pending.TryGetValue(image, out var oldCts))
         {
             await oldCts.CancelAsync();
@@ -210,18 +200,20 @@ public static class SmartImage
 
     /// <summary>
     /// HTTP/HTTPS: bitmap из единого LRU-кэша ImageCacheService.
+    /// Выполняется на UI-потоке: вызывающая цепочка BeginLoad не использует
+    /// ConfigureAwait(false), continuation возвращается через UI SynchronizationContext.
     /// Shared bitmap — IsOwned=false, Dispose не вызываем.
-    /// Eviction из кэша не вызывает Dispose: Image.Source держит ссылку,
-    /// GC соберёт после смены Source и исчезновения последней ссылки.
     /// </summary>
     private static async Task LoadHttpAsync(Image image, string url, int decodeWidth, CancellationToken ct)
     {
-        // Ленивая инициализация: GetService — словарный lookup, не нужен на каждый вызов
+        // Ленивая инициализация: всегда на UI-потоке, гонки нет.
         _imageCache ??= AppEntry.Services.GetService<ImageCacheService>();
         if (_imageCache == null) return;
 
         var bitmap = await _imageCache.GetImageAsync(url, decodeWidth, ct);
-        if (ct.IsCancellationRequested || GetSource(image) != url) return;
+
+        // bitmap == null: CT отменён (рециклинг) или ошибка загрузки.
+        if (bitmap == null || ct.IsCancellationRequested || GetSource(image) != url) return;
 
         DisposeOwned(image);
         image.Source = bitmap;

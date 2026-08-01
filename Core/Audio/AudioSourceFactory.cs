@@ -75,15 +75,17 @@ public static class AudioSourceFactory
     }
 
     /// <summary>
-    /// Создаёт аудио источник из <see cref="ResolvedStreamDescriptor"/>.
+    /// Создаёт экземпляр аудиоисточника на основе дескриптора потока.
     /// </summary>
-    /// <param name="descriptor">Дескриптор resolved потока.</param>
-    /// <param name="httpClient">HTTP-клиент с общим connection pool.</param>
-    /// <param name="urlAcquirer">Callback для первичного continuation acquire.</param>
-    /// <param name="urlRefresher">Callback для forced URL refresh при 403.</param>
-    /// <param name="config">Конфигурация стриминга.</param>
-    /// <param name="ct">Токен отмены.</param>
-    /// <returns>Готовый к инициализации аудио источник.</returns>
+    /// <param name="descriptor">Дескриптор разрешенного потока.</param>
+    /// <param name="httpClient">HTTP-клиент для загрузки сетевых сегментов.</param>
+    /// <param name="urlAcquirer">Callback первичного получения URL продолжения.</param>
+    /// <param name="urlRefresher">Callback обнуления и повторного получения URL при 403.</param>
+    /// <param name="config">Конфигурация параметров стриминга.</param>
+    /// <param name="ct">Токен отмены операции.</param>
+    /// <returns>Инициализированный экземпляр аудиоисточника.</returns>
+    /// <exception cref="InvalidOperationException">Выбрасывается, если глобальный кэш не был инициализирован.</exception>
+    /// <exception cref="ArgumentException">Выбрасывается при отсутствии URL и локального кэша.</exception>
     public static Task<IAudioSource> CreateAsync(
         ResolvedStreamDescriptor descriptor,
         HttpClient httpClient,
@@ -108,9 +110,40 @@ public static class AudioSourceFactory
         int bitrateKbps = descriptor.BitrateKbps;
         long contentLength = descriptor.ContentLengthBytes;
 
+        if (!string.IsNullOrEmpty(url) && File.Exists(url))
+        {
+            Log.Info($"[AudioSourceFactory] Source decision: LocalFileSource, track={trackId}, reason=local-download");
+            return Task.FromResult<IAudioSource>(new LocalFileSource(
+                url,
+                contentLength,
+                trackId,
+                null,
+                null));
+        }
+
         // Cache-only or empty URL path
         if (string.IsNullOrEmpty(url))
         {
+            if (format != AudioFormat.Unknown && bitrateKbps > 0)
+            {
+                string exactCacheKey = BuildCacheKey(trackId, format, bitrateKbps);
+                if (_globalCacheManager.IsFullyCached(exactCacheKey))
+                {
+                    var exactEntry = _globalCacheManager.GetCacheInfo(exactCacheKey);
+                    string exactPath = _globalCacheManager.GetCachePath(exactCacheKey);
+                    if (exactEntry != null && File.Exists(exactPath))
+                    {
+                        Log.Info($"[AudioSourceFactory] Source decision: LocalFileSource, track={trackId}, reason=full-cache");
+                        return Task.FromResult<IAudioSource>(new LocalFileSource(
+                            exactPath,
+                            exactEntry.TotalSize,
+                            trackId,
+                            _globalCacheManager,
+                            exactCacheKey));
+                    }
+                }
+            }
+
             var cached = FindAnyCachedTrack(trackId);
             if (cached != null)
             {
@@ -128,7 +161,6 @@ public static class AudioSourceFactory
             if (startupEntry != null)
             {
                 Log.Info($"[AudioSourceFactory] Source decision: CachingStreamSource, track={trackId}, reason=partial-cache-bootstrap, cacheKey={startupEntry.CacheKey}, prefix={startupEntry.GetContiguousDownloadedBytesFrom(0)}");
-
                 return Task.FromResult<IAudioSource>(new CachingStreamSource(
                     startupEntry.CacheKey,
                     trackId,
@@ -204,8 +236,19 @@ public static class AudioSourceFactory
     }
 
     /// <summary>
-    /// Создаёт аудио источник (legacy overload для DownloadService и обратной совместимости).
+    /// Создаёт экземпляр аудиоисточника по прямому URL (устаревшая перегрузка).
     /// </summary>
+    /// <param name="url">Прямой URL потока или путь к локальному файлу.</param>
+    /// <param name="httpClient">HTTP-клиент для сетевых запросов.</param>
+    /// <param name="urlAcquirer">Callback первичного получения URL продолжения.</param>
+    /// <param name="urlRefresher">Callback обновления URL при 403.</param>
+    /// <param name="trackId">Идентификатор трека.</param>
+    /// <param name="bitrateHint">Предполагаемый битрейт в kbps.</param>
+    /// <param name="config">Конфигурация параметров стриминга.</param>
+    /// <param name="ct">Токен отмены операции.</param>
+    /// <returns>Инициализированный экземпляр аудиоисточника.</returns>
+    /// <exception cref="InvalidOperationException">Выбрасывается, если глобальный кэш не был инициализирован.</exception>
+    /// <exception cref="ArgumentException">Выбрасывается при пустом URL и отсутствии кэша.</exception>
     public static async Task<IAudioSource> CreateAsync(
           string url,
           HttpClient httpClient,
@@ -224,6 +267,12 @@ public static class AudioSourceFactory
 
         config ??= _currentConfig;
         trackId ??= GenerateTrackIdFromUrl(url);
+
+        if (!string.IsNullOrEmpty(url) && File.Exists(url))
+        {
+            Log.Info($"[AudioSourceFactory] Source decision: LocalFileSource, reason=local-download");
+            return new LocalFileSource(url, 0, trackId, null, null);
+        }
 
         if (string.IsNullOrEmpty(url))
         {

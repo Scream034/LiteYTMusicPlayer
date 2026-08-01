@@ -460,7 +460,7 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
         if (_sharedBackend.BufferedBytes < minBytes)
         {
             pipeline.ActivateFillLoop();
-            pipeline.WaitForBackendWarmup(ResumeWarmupTimeoutMs);
+            await pipeline.WaitForBackendWarmupAsync(ResumeWarmupTimeoutMs, _lifetimeCts.Token).ConfigureAwait(false);
         }
 
         ResumePlaybackSequence(pipeline, startTimers: true, configurePipeline: false, trackId: _currentTrackId);
@@ -544,32 +544,32 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
 
         int sourceAheadMs = avgPingMs switch
         {
-            <= 0 => isSeek ? 1000 : 750,
-            <= 150 => isSeek ? 1200 : 800,
-            <= 400 => isSeek ? 2000 : 1200,
-            <= 900 => isSeek ? 3500 : 2000,
-            <= 2500 => isSeek ? 6000 : 3500,
-            _ => isSeek ? 9000 : 5000
+            <= 0 => isSeek ? 500 : 750,
+            <= 150 => isSeek ? 600 : 800,
+            <= 400 => isSeek ? 800 : 1200,
+            <= 900 => isSeek ? 1200 : 2000,
+            <= 2500 => isSeek ? 2000 : 3500,
+            _ => isSeek ? 3000 : 5000
         };
 
         int pcmThresholdMs = avgPingMs switch
         {
-            <= 0 => isSeek ? 120 : 80,
-            <= 150 => isSeek ? 150 : 100,
-            <= 400 => isSeek ? 220 : 120,
-            <= 900 => isSeek ? 350 : 180,
-            <= 2500 => isSeek ? 600 : 300,
-            _ => isSeek ? 900 : 450
+            <= 0 => isSeek ? 60 : 80,
+            <= 150 => isSeek ? 80 : 100,
+            <= 400 => isSeek ? 100 : 120,
+            <= 900 => isSeek ? 150 : 180,
+            <= 2500 => isSeek ? 250 : 300,
+            _ => isSeek ? 400 : 450
         };
 
         int warmupTimeoutMs = avgPingMs switch
         {
-            <= 0 => isSeek ? 300 : 600,
-            <= 150 => isSeek ? 400 : 800,
-            <= 400 => isSeek ? 900 : 1500,
-            <= 900 => isSeek ? 2000 : 3000,
-            <= 2500 => isSeek ? 6000 : 7000,
-            _ => isSeek ? 12000 : 10000
+            <= 0 => isSeek ? 200 : 600,
+            <= 150 => isSeek ? 300 : 800,
+            <= 400 => isSeek ? 500 : 1500,
+            <= 900 => isSeek ? 1000 : 3000,
+            <= 2500 => isSeek ? 2000 : 7000,
+            _ => isSeek ? 4000 : 10000
         };
 
         int samples = pipeline.SampleRate * pipeline.Channels * pcmThresholdMs / 1000;
@@ -1032,6 +1032,7 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
         StopTimers();
 
         SetState(PlayerState.Buffering);
+        _options.OnStarvationDetected?.Invoke();
 
         var warmupPlan = ComputePlaybackWarmupPlan(pipeline, isSeek: false);
         LaunchDeferredResume(pipeline, warmupPlan, cmd.SessionId);

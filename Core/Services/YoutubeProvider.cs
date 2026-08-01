@@ -157,29 +157,48 @@ public partial class YoutubeProvider : IDisposable
     #region Client Initialization
 
     /// <summary>
-    /// Пересоздаёт HTTP-клиент и внутренний движок YouTubeClient с учётом актуальных кук авторизации.
+    /// Пересоздаёт HTTP-клиент и внутренний <see cref="YoutubeClient"/> с учётом
+    /// текущих кук авторизации и настроек прокси из <see cref="LibraryService"/>.
+    /// Вызывается при смене аккаунта, смене сетевого интерфейса (VPN) и изменении прокси.
     /// </summary>
     public void ReloadClient()
     {
         DisposeCurrentClient();
 
-        // VisitorData меняется при смене аккаунта → старый session token невалиден
+        // VisitorData привязан к сессии — при смене клиента он невалиден.
         _poTokenProvider?.Invalidate();
+
+        var proxy = _libraryService?.Settings.Proxy;
 
         _currentHandler = new SocketsHttpHandler
         {
             UseCookies = false,
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
             AllowAutoRedirect = false,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
-            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+
+            // Фикс зависаний API-запросов (поиск, тексты)
+            PooledConnectionIdleTimeout = TimeSpan.FromSeconds(15),
             MaxConnectionsPerServer = 20,
             EnableMultipleHttp2Connections = true,
-            KeepAlivePingPolicy = HttpKeepAlivePingPolicy.WithActiveRequests,
-            KeepAlivePingDelay = TimeSpan.FromSeconds(30),
-            KeepAlivePingTimeout = TimeSpan.FromSeconds(10),
+
+            // ПРОАКТИВНЫЙ ПИНГ: постоянно стучится к серверам Google, поддерживая NAT живым
+            KeepAlivePingPolicy = HttpKeepAlivePingPolicy.Always,
+            KeepAlivePingDelay = TimeSpan.FromSeconds(15),
+            KeepAlivePingTimeout = TimeSpan.FromSeconds(5),
             ConnectTimeout = TimeSpan.FromSeconds(10),
         };
+
+        if (proxy?.Enabled == true && !string.IsNullOrWhiteSpace(proxy.Host))
+        {
+            var webProxy = new WebProxy($"http://{proxy.Host}:{proxy.Port}");
+
+            if (proxy.UseAuth && !string.IsNullOrWhiteSpace(proxy.Username))
+                webProxy.Credentials = new NetworkCredential(proxy.Username, proxy.Password);
+
+            _currentHandler.Proxy = webProxy;
+            _currentHandler.UseProxy = true;
+        }
 
         var baseHttpClient = new HttpClient(_currentHandler, disposeHandler: false)
         {
@@ -201,7 +220,8 @@ public partial class YoutubeProvider : IDisposable
             ownsHttpClient: false,
             poTokenProvider: _poTokenProvider);
 
-        Log.Info($"[YouTube] Client reloaded. Auth: {AuthService?.IsAuthenticated ?? false}");
+        Log.Info($"[YouTube] Client reloaded. Auth: {AuthService?.IsAuthenticated ?? false}, " +
+                $"Proxy: {(proxy?.Enabled == true ? $"{proxy.Host}:{proxy.Port}" : "none")}");
     }
 
     private void DisposeCurrentClient()
@@ -769,38 +789,104 @@ public partial class YoutubeProvider : IDisposable
     #region Quality Options (Menu UI Support)
 
     /// <summary>
-    /// Возвращает список доступных форматов стрима для указанного видео с поддержкой отмены операции.
-    /// Предотвращает лишние сетевые вызовы за счёт чтения сохранённых ранее манифестов.
+    /// Возвращает список доступных форматов стрима для указанного видео с поддержкой отмены операции и принудительного обновления.
+    /// Предотвращает лишние сетевые вызовы за счёт чтения скачанных файлов, сохранённых ранее манифестов и дискового кэша.
     /// </summary>
-    public async Task<List<StreamOption>> GetStreamOptionsAsync(string videoId, CancellationToken ct = default)
+    /// <param name="videoId">Идентификатор видео или трека.</param>
+    /// <param name="ct">Токен отмены операции.</param>
+    /// <param name="forceRefresh">Флаг принудительного игнорирования локального кэша и вызова YouTube API.</param>
+    /// <returns>Список вариантов аудиопотока.</returns>
+    public async Task<List<StreamOption>> GetStreamOptionsAsync(
+        string videoId,
+        CancellationToken ct = default,
+        bool forceRefresh = false)
     {
         if (!IsReady || string.IsNullOrWhiteSpace(videoId)) return [];
 
         string trackId = videoId.StartsWith("yt_", StringComparison.Ordinal) ? videoId : $"yt_{videoId}";
         string rawId = videoId.StartsWith("yt_", StringComparison.Ordinal) ? videoId[3..] : videoId;
 
-        if (_manifestRamCache.TryGetValue(trackId, out var ramManifest))
+        var track = _trackRegistry.TryGet(trackId) ?? _libraryService?.GetTrack(trackId);
+        bool isExplicitDownload = track != null && track.IsDownloaded && !string.IsNullOrEmpty(track.LocalPath) && File.Exists(track.LocalPath);
+
+        StreamManifest? manifest = null;
+
+        if (!forceRefresh)
         {
-            var options = MapManifestToOptions(ramManifest);
-            Log.Debug($"[YouTube] StreamOptions RAM cache hit: {trackId} ({options.Count} formats)");
-            return options;
+            // 1. СНАЧАЛА проверяем RAM Cache (0 мс, 0 сети). Если манифест уже загружен кнопкой "Обновить" — берём его!
+            if (_manifestRamCache.TryGetValue(trackId, out var ramManifest))
+            {
+                manifest = ramManifest;
+            }
+            // 2. Затем Disk Session Cache (0 мс, 0 сети)
+            else
+            {
+                var diskEntry = SessionCacheStore.GetManifest(trackId);
+                if (diskEntry is { Variants.Count: > 0 })
+                {
+                    manifest = ReconstructManifest(diskEntry);
+                    _manifestRamCache[trackId] = manifest;
+                }
+            }
+
+            // Манифест найден в кэше — возвращаем ВСЕ форматы!
+            if (manifest != null)
+            {
+                var options = MapManifestToOptions(manifest);
+                Log.Debug($"[YouTube] StreamOptions CACHE hit: {trackId} ({options.Count} formats)");
+                return options;
+            }
+
+            // 3. Если манифеста НЕТ, но файл скачан (папка Downloads) — возвращаем 1 формат, чтобы не лезть в сеть
+            if (isExplicitDownload)
+            {
+                var format = track!.PreferredFormat ?? AudioSourceFactory.DetectFormat(track.LocalPath!);
+                if (format == AudioFormat.Unknown) format = AudioFormat.WebM;
+
+                var localOption = new StreamOption
+                {
+                    Format = format,
+                    CodecType = AudioSourceFactory.GetCodecForFormat(format),
+                    Bitrate = track.PreferredBitrate > 0 ? track.PreferredBitrate : 128,
+                    SizeMb = new FileInfo(track.LocalPath!).Length / (1024.0 * 1024.0),
+                    IsDownloaded = true,
+                    IsActive = true
+                };
+
+                Log.Debug($"[YouTube] StreamOptions EXPLICIT DOWNLOAD hit: {trackId}");
+                return [localOption];
+            }
+
+            // 4. То же самое для Local Audio Disk Cache (скрытый кэш)
+            var globalCache = AudioSourceFactory.GlobalCache;
+            if (globalCache != null)
+            {
+                var cachedTrack = globalCache.FindBestCacheByTrackId(trackId)
+                    ?? globalCache.FindBestStartupCache(trackId, 0);
+
+                if (cachedTrack != null)
+                {
+                    var localOption = new StreamOption
+                    {
+                        Format = cachedTrack.Format,
+                        CodecType = cachedTrack.Codec,
+                        Bitrate = cachedTrack.Bitrate,
+                        SizeMb = cachedTrack.TotalSize / (1024.0 * 1024.0),
+                        IsDownloaded = true,
+                        IsActive = true
+                    };
+
+                    Log.Debug($"[YouTube] StreamOptions LOCAL DISK AUDIO cache hit: {trackId}");
+                    return [localOption];
+                }
+            }
         }
 
-        var diskEntry = SessionCacheStore.GetManifest(trackId);
-        if (diskEntry is { Variants.Count: > 0 })
-        {
-            var diskManifest = ReconstructManifest(diskEntry);
-            _manifestRamCache[trackId] = diskManifest;
-
-            var options = MapManifestToOptions(diskManifest);
-            Log.Debug($"[YouTube] StreamOptions DISK cache hit: {trackId} ({options.Count} formats)");
-            return options;
-        }
-
+        // 5. YouTube API Call — вызывается при принудительном обновлении или промахе локальных источников
         try
         {
             var vId = VideoId.Parse(rawId);
-            var manifest = await _youtube.Videos.Streams
+            manifest = await _youtube.Videos.Streams
                 .GetManifestAsync(vId, ct)
                 .ConfigureAwait(false);
 
@@ -823,6 +909,31 @@ public partial class YoutubeProvider : IDisposable
         }
     }
 
+    /// <summary>
+    /// Инвалидирует RAM-кэш манифеста для конкретного трека.
+    /// Вызывается из <see cref="AudioEngine"/> при 403, чтобы следующий
+    /// <c>RefreshStreamAsync(force=false)</c> обратился к YouTube API,
+    /// а не вернул тот же мёртвый URL из оперативной памяти.
+    /// </summary>
+    /// <param name="trackId">Идентификатор трека (с yt_ префиксом или без).</param>
+    public void InvalidateMemoryCache(string trackId)
+    {
+        if (string.IsNullOrEmpty(trackId))
+            return;
+
+        // Удаляем по точному ключу (обычно "yt_xxxxx")
+        _manifestRamCache.TryRemove(trackId, out _);
+
+        // Страховка: если передан rawId без префикса — пробуем оба варианта.
+        var rawId = YoutubeIdHelper.ExtractRawId(trackId);
+        if (!string.Equals(rawId, trackId, StringComparison.Ordinal))
+        {
+            _manifestRamCache.TryRemove($"yt_{rawId}", out _);
+            _manifestRamCache.TryRemove(rawId, out _);
+        }
+
+        Log.Debug($"[YouTube] RAM manifest cache invalidated for {trackId}");
+    }
     #endregion
 
     #region Support Helpers (Formatting & Fallback)
@@ -1781,8 +1892,14 @@ public partial class YoutubeProvider : IDisposable
         };
     }
 
+    /// <summary>
+    /// Создаёт дескриптор потока на основе полностью закэшированной записи.
+    /// Битрейт берётся из реального значения записи кэша, а не из запроса пользователя,
+    /// чтобы <see cref="AudioStreamInfo"/> корректно отражал воспроизводимый файл.
+    /// </summary>
     private static ResolvedStreamDescriptor CreateDescriptorFromCacheEntry(
-        string trackId, AudioCacheEntry entry)
+        string trackId,
+        AudioCacheEntry entry)
     {
         return new ResolvedStreamDescriptor
         {
@@ -1824,17 +1941,27 @@ public partial class YoutubeProvider : IDisposable
         return new StreamManifest(streams, entry.IntegratedLufs);
     }
 
+    /// <summary>
+    /// Конвертирует манифест в список UI-опций с дедупликацией по нормализованному bucket'у.
+    /// Предотвращает показ двух форматов с одинаковым физическим кэш-файлом.
+    /// </summary>
     private static List<StreamOption> MapManifestToOptions(StreamManifest manifest)
     {
         var streams = manifest.GetAudioOnlyStreams()
             .OrderByDescending(s => s.Bitrate)
             .ToList();
 
+        var seen = new HashSet<(AudioFormat, int)>();
         var result = new List<StreamOption>(streams.Count);
+
         for (int i = 0; i < streams.Count; i++)
         {
             var s = streams[i];
             var format = YoutubeIdHelper.MapContainerToFormat(s.Container.Name);
+            int normalizedBitrate = AudioConstants.NormalizeBitrate((int)Math.Round(s.Bitrate.KiloBitsPerSecond));
+
+            if (!seen.Add((format, normalizedBitrate)))
+                continue;
 
             result.Add(new StreamOption
             {

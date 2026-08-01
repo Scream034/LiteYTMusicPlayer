@@ -49,6 +49,14 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     /// <param name="StartPlaying">Запускать ли воспроизведение на целевом треке.</param>
     private sealed record NavigateCommand(bool Forward, bool UserInitiated, bool StartPlaying = true) : IEngineCommand;
 
+    /// <summary>Смена формата/качества активного трека (встраивается в очередь для избежания гонки состояний).</summary>
+    private sealed record SwitchQualityCommand(
+        TrackInfo Track,
+        TimeSpan Position,
+        AudioFormat Format,
+        int Bitrate,
+        int Session) : IEngineCommand;
+
     #endregion
 
     #region Constants
@@ -116,6 +124,11 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     private SessionGuard _session;
     private CancellationTokenSource? _sessionCts;
     private readonly Lock _sessionLock = new();
+
+    private CancellationTokenSource? _networkRebuildCts;
+    private readonly Lock _networkRebuildLock = new();
+    private string? _lastOutboundIp;
+    private Task? _networkWatchdogTask;
 
     /// <summary>
     /// Single-flight задачи первичного получения continuation URL по trackId.
@@ -318,7 +331,8 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
             UseNullBackend = false,
             OnPipelineConfiguring = ConfigurePipelineBeforeStart,
             OnIntegratedLufsResolved = CommitIntegratedLufs,
-            ShouldFastReplay = () => RepeatMode == RepeatMode.One
+            ShouldFastReplay = () => RepeatMode == RepeatMode.One,
+            OnStarvationDetected = NotifyNetworkStarvation
         });
 
         SubscribeToPlayerEvents();
@@ -335,8 +349,17 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
         _commandProcessorTask = Task.Run(ProcessCommandsAsync);
         _volumeSaveTask = Task.Run(VolumeSaveLoopAsync);
 
-        // Внедряем регистрацию службы в реестре жизненного цикла  [2]
+        // Внедряем регистрацию службы в реестре жизненного цикла
         LifecycleRegistry.Instance?.RegisterBackgroundSuspendable(this);
+
+        _lastOutboundIp = GetOutboundIp();
+        Log.Debug($"[AudioEngine] Initial outbound IP: {_lastOutboundIp ?? "(none)"}");
+
+        System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged
+            += OnNetworkAddressChanged;
+
+        // Watchdog — fallback для VPN без NetworkChange events
+        _networkWatchdogTask = Task.Run(NetworkWatchdogAsync);
     }
 
     /// <summary>
@@ -635,6 +658,10 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
 
                         case NavigateCommand nav:
                             await HandleNavigateAsync(nav).ConfigureAwait(false);
+                            break;
+
+                        case SwitchQualityCommand sq:
+                            await HandleSwitchQualityAsync(sq).ConfigureAwait(false);
                             break;
                     }
                 }
@@ -948,7 +975,7 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     }
 
     /// <summary>
-    /// Callback для принудительного обновления URL при 403 Forbidden или устаревании ссылки.
+    /// Callback для обновления URL при 403 Forbidden.
     /// </summary>
     private async ValueTask<string?> RefreshUrlCallbackAsync(string trackId, CancellationToken ct)
     {
@@ -962,19 +989,38 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
 
         var sessionToken = GetSessionToken();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, sessionToken);
+
         try
         {
+            // Точечная инвалидация кэшей именно для этого трека
+            Audio.Http.SessionCacheStore.Invalidate(trackId);
+            _youtube.InvalidateMemoryCache(trackId);
+
+            Log.Info($"[AudioEngine] 403 refresh: per-track caches invalidated for {trackId}");
+
+            // Soft refresh (force=false)
             var descriptor = await Task.Run(
-                () => _youtube.RefreshStreamAsync(track, true, linked.Token), linked.Token).ConfigureAwait(false);
+                () => _youtube.RefreshStreamAsync(track, false, linked.Token),
+                linked.Token).ConfigureAwait(false);
 
             if (descriptor is { HasLiveUrl: true })
             {
+                Log.Info($"[AudioEngine] Soft refresh returned new URL for {trackId}");
                 return descriptor.Value.Url;
             }
 
-            return null;
+            // Force refresh — последний шанс
+            Log.Warn($"[AudioEngine] Soft refresh failed for {trackId}, " +
+                    $"falling back to force refresh");
+
+            descriptor = await Task.Run(
+                () => _youtube.RefreshStreamAsync(track, true, linked.Token),
+                linked.Token).ConfigureAwait(false);
+
+            return descriptor is { HasLiveUrl: true } ? descriptor.Value.Url : null;
         }
-        catch (Exception) when (linked.IsCancellationRequested || sessionToken.IsCancellationRequested
+        catch (Exception) when (linked.IsCancellationRequested
+            || sessionToken.IsCancellationRequested
             || !string.Equals(CurrentTrack?.Id, trackId, StringComparison.Ordinal))
         {
             return null;
@@ -1153,8 +1199,25 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     }
 
     /// <summary>
-    /// Разрешает startup-источник трека: full cache → partial fast-start → session cache → saved URL → YouTube API.
+    /// Разрешает источник аудиопотока для воспроизведения трека.
     /// </summary>
+    /// <remarks>
+    /// <para><b>Стратегия разрешения (порядок приоритета):</b></para>
+    /// <list type="number">
+    ///   <item>Скачанный локальный файл (папка Downloads) — мгновенный старт, формат определяется из физического файла.</item>
+    ///   <item>Exact full disk cache — точное совпадение по format+bitrate bucket через <see cref="AudioSourceFactory.BuildCacheKey"/>.</item>
+    ///   <item>Any full disk cache — fallback при отсутствии явного предпочтения формата.</item>
+    ///   <item>Partial cache fast-start — локальный contiguous-префикс с ленивым continuation URL.</item>
+    ///   <item>Session cache (disk manifest) — HEAD-probe к CDN, восстановление манифеста без YouTube API.</item>
+    ///   <item>Provider memory cache (RAM manifest) — instant-access из текущей сессии.</item>
+    ///   <item>YouTube API call — cold path, полный запрос манифеста.</item>
+    /// </list>
+    /// </remarks>
+    /// <param name="track">Метаданные трека.</param>
+    /// <param name="ct">Токен отмены асинхронной операции.</param>
+    /// <param name="seekPosition">Начальная позиция воспроизведения при перемотке.</param>
+    /// <returns>Дескриптор готового аудиопотока.</returns>
+    /// <exception cref="InvalidOperationException">Выбрасывается при невозможности получить поток из всех источников.</exception>
     private async Task<ResolvedStreamDescriptor> ResolveStreamAsync(
         TrackInfo track,
         CancellationToken ct,
@@ -1166,32 +1229,106 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
 
         var rawId = track.GetRawIdSpan().ToString();
 
-        // 1. Full cache → local playback
-        var fullCache = AudioSourceFactory.FindAnyCachedTrack(track.Id)
-                     ?? (rawId != track.Id ? AudioSourceFactory.FindAnyCachedTrack(rawId) : null);
-
-        if (fullCache != null)
+        // --- Path 0: Downloaded local files (Downloads folder) ---
+        // Формат определяется из физического файла на диске, а не из PreferredFormat,
+        // который мутируется при SwitchQuality и больше не отражает формат скачанного файла.
+        // Битрейт вычисляется из размера файла и длительности трека.
+        // Проверяется только контейнер: скачанный файл один на контейнер,
+        // битрейт не является дискриминантом для Downloads.
+        if (track.IsDownloaded && !string.IsNullOrEmpty(track.LocalPath) && File.Exists(track.LocalPath))
         {
-            var entry = fullCache.Value.Entry;
-            TrackNormalizationHydrator.HydrateNormalization(track, entry);
-            TryEnrichIntegratedLufsFromLocalSources(track);
+            var downloadedFormat = AudioSourceFactory.DetectFormat(track.LocalPath);
+            if (downloadedFormat == AudioFormat.Unknown) downloadedFormat = AudioFormat.WebM;
 
-            var descriptor = new ResolvedStreamDescriptor
+            bool isUserOverrodeFormat = requested.HasFormat && requested.Format != downloadedFormat;
+
+            if (!isUserOverrodeFormat)
             {
-                TrackId = track.Id,
-                Url = "",
-                Format = entry.Format,
-                Codec = entry.Codec,
-                BitrateKbps = entry.Bitrate,
-                ContentLengthBytes = entry.TotalSize,
-                Origin = StreamSource.DiskCacheFull
-            };
+                var fileInfo = new FileInfo(track.LocalPath);
+                var codec = AudioSourceFactory.GetCodecForFormat(downloadedFormat);
+                int fileBitrateKbps = track.Duration.TotalSeconds > 0
+                    ? Math.Max((int)(fileInfo.Length * 8 / track.Duration.TotalSeconds / 1000), 32)
+                    : 128;
 
-            Log.Info($"[AudioEngine] ResolveStreamAsync FULL CACHE -> {descriptor}");
-            return descriptor;
+                var descriptor = new ResolvedStreamDescriptor
+                {
+                    TrackId = track.Id,
+                    Url = track.LocalPath,
+                    Format = downloadedFormat,
+                    Codec = codec,
+                    BitrateKbps = fileBitrateKbps,
+                    ContentLengthBytes = fileInfo.Length,
+                    Origin = StreamSource.DiskCacheFull
+                };
+
+                Log.Info($"[AudioEngine] ResolveStreamAsync LOCAL DOWNLOAD -> {descriptor}");
+                TryEnrichIntegratedLufsFromLocalSources(track);
+                return descriptor;
+            }
         }
 
-        // 2. Partial cache fast-start
+        // --- Path 1: Full disk cache (exact match by format+bitrate bucket) ---
+        // При явном предпочтении формата и битрейта — точный lookup через BuildCacheKey.
+        // Единый источник истины с AudioSourceFactory: тот же ключ, тот же bucket.
+        if (requested.HasFormat && requested.HasBitrate)
+        {
+            string exactCacheKey = AudioSourceFactory.BuildCacheKey(track.Id, requested.Format!.Value, requested.BitrateKbps);
+            if (AudioSourceFactory.GlobalCache is { } exactCache && exactCache.IsFullyCached(exactCacheKey))
+            {
+                var exactEntry = exactCache.GetCacheInfo(exactCacheKey);
+                if (exactEntry != null)
+                {
+                    TrackNormalizationHydrator.HydrateNormalization(track, exactEntry);
+                    TryEnrichIntegratedLufsFromLocalSources(track);
+
+                    var descriptor = new ResolvedStreamDescriptor
+                    {
+                        TrackId = track.Id,
+                        Url = "",
+                        Format = exactEntry.Format,
+                        Codec = exactEntry.Codec,
+                        BitrateKbps = exactEntry.Bitrate,
+                        ContentLengthBytes = exactEntry.TotalSize,
+                        Origin = StreamSource.DiskCacheFull
+                    };
+
+                    Log.Info($"[AudioEngine] ResolveStreamAsync FULL CACHE (exact) -> {descriptor}");
+                    return descriptor;
+                }
+            }
+        }
+
+        // --- Path 1b: Full disk cache (any format, no user preference) ---
+        // FindAnyCachedTrack возвращает запись с максимальным битрейтом.
+        // Используется только при первичном воспроизведении без явного предпочтения.
+        if (!requested.HasFormat)
+        {
+            var fullCache = AudioSourceFactory.FindAnyCachedTrack(track.Id)
+                         ?? (rawId != track.Id ? AudioSourceFactory.FindAnyCachedTrack(rawId) : null);
+
+            if (fullCache != null)
+            {
+                var entry = fullCache.Value.Entry;
+                TrackNormalizationHydrator.HydrateNormalization(track, entry);
+                TryEnrichIntegratedLufsFromLocalSources(track);
+
+                var descriptor = new ResolvedStreamDescriptor
+                {
+                    TrackId = track.Id,
+                    Url = "",
+                    Format = entry.Format,
+                    Codec = entry.Codec,
+                    BitrateKbps = entry.Bitrate,
+                    ContentLengthBytes = entry.TotalSize,
+                    Origin = StreamSource.DiskCacheFull
+                };
+
+                Log.Info($"[AudioEngine] ResolveStreamAsync FULL CACHE -> {descriptor}");
+                return descriptor;
+            }
+        }
+
+        // --- Path 2: Partial cache fast-start ---
         var bootstrapCache = TryGetPartialBootstrapCache(track, seekPosition);
         if (bootstrapCache != null)
         {
@@ -1238,7 +1375,7 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
 
         ct.ThrowIfCancellationRequested();
 
-        // 3. Session cache (disk manifest)
+        // --- Path 3: Session cache (disk manifest with HEAD probe) ---
         var diskEntry = await SessionCacheStore
             .TryGetManifestAndProbeAsync(track.Id, Audio.Http.SharedHttpClient.Instance, ct)
             .ConfigureAwait(false);
@@ -1279,7 +1416,7 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
             }
         }
 
-        // 4. Provider memory cache (RAM manifest)
+        // --- Path 4: Provider memory cache (RAM manifest) ---
         var memDescriptor = _youtube.TryGetCachedStreamDescriptor(
             track.Id,
             requested.Format,
@@ -1287,16 +1424,23 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
 
         if (memDescriptor != null)
         {
-            var cacheEntry = FindNormalizationCacheEntry(track.Id);
-            if (cacheEntry != null)
-                TrackNormalizationHydrator.HydrateNormalization(track, cacheEntry);
+            if (memDescriptor.Value.ExpireUtc == default || DateTime.UtcNow.AddMinutes(5) < memDescriptor.Value.ExpireUtc)
+            {
+                var cacheEntry = FindNormalizationCacheEntry(track.Id);
+                if (cacheEntry != null)
+                    TrackNormalizationHydrator.HydrateNormalization(track, cacheEntry);
 
-            var descriptor = memDescriptor.Value with { TrackId = track.Id };
-            Log.Info($"[AudioEngine] Provider memory cache hit: {track.Id} -> {descriptor}");
-            return descriptor;
+                var descriptor = memDescriptor.Value with { TrackId = track.Id };
+                Log.Info($"[AudioEngine] Provider memory cache hit: {track.Id} -> {descriptor}");
+                return descriptor;
+            }
+            else
+            {
+                Log.Debug($"[AudioEngine] Provider memory cache hit ignored due to ExpireUtc passed: {track.Id}");
+            }
         }
 
-        // 5. YouTube API call (cold path)
+        // --- Path 5: YouTube API call (cold path) ---
         var freshDescriptor = await _youtube.RefreshStreamAsync(track, false, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Failed to resolve stream URL for {track.Id}");
 
@@ -1495,6 +1639,128 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
 
     #endregion
 
+    #region Quality Switching
+
+    public Task SwitchQualityAsync(AudioFormat format, int bitrate)
+    {
+        if (CurrentTrack == null) return Task.CompletedTask;
+
+        ResetSealedFailedTrack();
+        int session = BeginNewSession(); // Отменяет предыдущие сессии
+
+        var track = CurrentTrack;
+        track.TransientFormat = format;
+        track.TransientBitrate = bitrate;
+
+        if (_library.Settings.RememberTrackFormat)
+        {
+            track.PreferredFormat = format;
+            track.PreferredBitrate = bitrate;
+        }
+
+        // Ставим в строгую очередь команд, чтобы исключить рассинхрон UI и Аудио
+        EnqueueCommand(new SwitchQualityCommand(track, CurrentPosition, format, bitrate, session));
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Обработчик команды смены качества. Выполняется строго последовательно в actor-цикле.
+    /// </summary>
+    private async Task HandleSwitchQualityAsync(SwitchQualityCommand cmd)
+    {
+        var ct = GetSessionToken();
+        if (_session.IsStale(cmd.Session)) return;
+
+        try
+        {
+            var elapsed = (DateTime.UtcNow - _lastQualitySwitchTime).TotalMilliseconds;
+            if (elapsed < QualitySwitchCooldownMs)
+                await Task.Delay(QualitySwitchCooldownMs - (int)elapsed, ct).ConfigureAwait(false);
+
+            _lastQualitySwitchTime = DateTime.UtcNow;
+
+            Log.Info($"[AudioEngine] SwitchQuality start: track={cmd.Track.Id}, requestedFormat={cmd.Track.TransientFormat?.ToContainerName() ?? "-"}, requestedBitrate={cmd.Track.TransientBitrate}, resumePos={cmd.Position.TotalMilliseconds}ms");
+
+            Volatile.Write(ref _nTokenActiveTrackId, cmd.Track.Id);
+            ct.ThrowIfCancellationRequested();
+
+            var descriptor = await Task.Run(async () =>
+                await _youtube.RefreshStreamAsync(cmd.Track, false, ct).ConfigureAwait(false)
+                ?? await _youtube.RefreshStreamAsync(cmd.Track, true, ct).ConfigureAwait(false),
+                ct).ConfigureAwait(false);
+
+            if (descriptor == null)
+            {
+                if (!_session.IsStale(cmd.Session))
+                    RaiseError(new InvalidOperationException("No stream available"));
+                return;
+            }
+
+            if (_session.IsStaleOrCancelled(cmd.Session, ct) || IsSealedFailedTrack(cmd.Track.Id)) return;
+
+            var d = descriptor.Value;
+
+            Log.Info($"[AudioEngine] SwitchQuality resolved -> {d}");
+
+            var currentInfo = _player.StreamInfo;
+            if (currentInfo.IsValid
+                && string.Equals(currentInfo.TrackId, d.TrackId, StringComparison.Ordinal)
+                && currentInfo.Format == d.Format
+                && currentInfo.CodecType == d.Codec
+                && currentInfo.Bitrate == d.BitrateKbps)
+            {
+                Log.Info($"[AudioEngine] SwitchQuality skipped: active pipeline already matches");
+                return;
+            }
+
+            if (d.HasPerceptualLufs)
+            {
+                cmd.Track.SetIntegratedLufs(d.IntegratedLufs, LoudnessSource.YoutubePerceptual);
+                CommitIntegratedLufs(cmd.Track.Id, d.IntegratedLufs, LoudnessSource.YoutubePerceptual);
+            }
+
+            // Дожидаемся предыдущей задачи (если она каким-то чудом осталась), 
+            // чтобы не сломать инвариант плеера.
+            var previousTask = Volatile.Read(ref _activePlayTask);
+            if (previousTask is { IsCompleted: false })
+            {
+                try { await previousTask.ConfigureAwait(false); } catch { }
+            }
+
+            if (_session.IsStaleOrCancelled(cmd.Session, ct)) return;
+
+            var playTask = _player.PlayAsync(
+                d,
+                ct,
+                seekPosition: cmd.Position.TotalSeconds > 1 ? cmd.Position : null);
+
+            Volatile.Write(ref _activePlayTask, playTask);
+            await playTask.ConfigureAwait(false);
+
+            if (d.HasPerceptualLufs)
+            {
+                AudioSourceFactory.GlobalCache?.TryUpdateIntegratedLufs(
+                    cmd.Track.Id, d.IntegratedLufs, LoudnessSource.YoutubePerceptual);
+            }
+
+            ApplyGainToPipeline();
+        }
+        catch (Exception ex)
+        {
+            if (!_session.IsStaleOrCancelled(cmd.Session, ct) && !CancellationHelper.IsCancellationLike(ex))
+            {
+                AbortCurrentTrackPlaybackAfterFatalError(cmd.Track.Id);
+                RaiseError(ex);
+            }
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref _nTokenActiveTrackId, null, cmd.Track.Id);
+        }
+    }
+
+    #endregion
+
     #region Seek
 
     /// <summary>
@@ -1509,123 +1775,6 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     public ValueTask SeekAsync(TimeSpan position)
     {
         return _player.SeekAsync(position);
-    }
-
-    #endregion
-
-    #region Quality Switching
-
-    public async Task SwitchQualityAsync(AudioFormat format, int bitrate)
-    {
-        if (CurrentTrack == null) return;
-        ResetSealedFailedTrack();
-        int session = BeginNewSession();
-        var ct = GetSessionToken();
-
-        try
-        {
-            var elapsed = (DateTime.UtcNow - _lastQualitySwitchTime).TotalMilliseconds;
-            if (elapsed < QualitySwitchCooldownMs)
-                await Task.Delay(QualitySwitchCooldownMs - (int)elapsed, ct).ConfigureAwait(false);
-            _lastQualitySwitchTime = DateTime.UtcNow;
-
-            var pos = CurrentPosition;
-            var track = CurrentTrack;
-            if (track == null) return;
-
-            track.TransientFormat = format;
-            track.TransientBitrate = bitrate;
-
-            if (_library.Settings.RememberTrackFormat)
-            {
-                track.PreferredFormat = format;
-                track.PreferredBitrate = bitrate;
-            }
-
-            if (!_session.IsStale(session))
-                await SwitchQualityCoreAsync(track, pos, session, ct).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) { }
-    }
-
-    /// <summary>
-    /// Выполняет переключение качества: останавливает воспроизведение, обновляет URL
-    /// и перезапускает с новым битрейтом/контейнером.
-    /// </summary>
-    private async Task SwitchQualityCoreAsync(TrackInfo track, TimeSpan position, int session, CancellationToken ct)
-    {
-        try
-        {
-            Log.Info($"[AudioEngine] SwitchQuality start: track={track.Id}, requestedFormat={track.TransientFormat?.ToContainerName() ?? "-"}, requestedBitrate={track.TransientBitrate}, resumePos={position.TotalMilliseconds}ms");
-
-            Volatile.Write(ref _nTokenActiveTrackId, track.Id);
-            ct.ThrowIfCancellationRequested();
-
-            var descriptor = await Task.Run(async () =>
-                await _youtube.RefreshStreamAsync(track, false, ct).ConfigureAwait(false)
-                ?? await _youtube.RefreshStreamAsync(track, true, ct).ConfigureAwait(false),
-                ct).ConfigureAwait(false);
-
-            if (descriptor == null)
-            {
-                if (!_session.IsStale(session))
-                    RaiseError(new InvalidOperationException("No stream available"));
-                return;
-            }
-
-            if (_session.IsStaleOrCancelled(session, ct) || IsSealedFailedTrack(track.Id)) return;
-
-            var d = descriptor.Value;
-
-            Log.Info($"[AudioEngine] SwitchQuality resolved -> {d}");
-
-            // Повторный клик на активный формат: resolved совпадает с pipeline — rebuild не нужен.
-            var currentInfo = _player.StreamInfo;
-            if (currentInfo.IsValid
-                && string.Equals(currentInfo.TrackId, d.TrackId, StringComparison.Ordinal)
-                && currentInfo.Format == d.Format
-                && currentInfo.CodecType == d.Codec
-                && currentInfo.Bitrate == d.BitrateKbps)
-            {
-                Log.Info($"[AudioEngine] SwitchQuality skipped: active pipeline already matches " +
-                         $"{d.Format.ToContainerName()}/{d.Codec.ToDisplayName()}/{d.BitrateKbps}kbps for {track.Id}");
-                return;
-            }
-
-            var actualPosition = CurrentPosition;
-
-            if (d.HasPerceptualLufs)
-            {
-                track.SetIntegratedLufs(d.IntegratedLufs, LoudnessSource.YoutubePerceptual);
-                CommitIntegratedLufs(track.Id, d.IntegratedLufs, LoudnessSource.YoutubePerceptual);
-            }
-
-            await _player.PlayAsync(
-                d,
-                ct,
-                seekPosition: actualPosition.TotalSeconds > 1 ? actualPosition : null)
-                .ConfigureAwait(false);
-
-            if (d.HasPerceptualLufs)
-            {
-                AudioSourceFactory.GlobalCache?.TryUpdateIntegratedLufs(
-                    track.Id, d.IntegratedLufs, LoudnessSource.YoutubePerceptual);
-            }
-
-            ApplyGainToPipeline();
-        }
-        catch (Exception ex)
-        {
-            if (!_session.IsStaleOrCancelled(session, ct) && !CancellationHelper.IsCancellationLike(ex))
-            {
-                AbortCurrentTrackPlaybackAfterFatalError(track.Id);
-                RaiseError(ex);
-            }
-        }
-        finally
-        {
-            Interlocked.CompareExchange(ref _nTokenActiveTrackId, null, track.Id);
-        }
     }
 
     #endregion
@@ -1754,6 +1903,202 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     #region Helpers
 
     /// <summary>
+    /// Определяет, стоит ли считать continuation URL из session cache актуальным.
+    /// </summary>
+    /// <param name="manifest">Manifest из session cache.</param>
+    /// <param name="safetyBufferMinutes">Запас времени до expiry (по умолчанию 5 минут).</param>
+    /// <returns>
+    /// <c>true</c> — URL скорее всего ещё жив;<br/>
+    /// <c>false</c> — URL протухает в ближайшие <paramref name="safetyBufferMinutes"/> минут
+    /// или уже протух.
+    /// </returns>
+    private static bool IsContinuationUrlLikelyFresh(
+        Audio.Http.TrackManifestEntry manifest,
+        int safetyBufferMinutes = 5)
+    {
+        // Если expire не выставлен — не можем судить, считаем актуальным.
+        if (manifest.ExpireUtc == default || manifest.ExpireUtc == DateTime.MinValue)
+            return true;
+
+        // URL считается протухшим если до expiry меньше safetyBufferMinutes.
+        // Это покрывает случай когда трек лежит в очереди и начинает играть
+        // позже чем был получен manifest.
+        return DateTime.UtcNow.AddMinutes(safetyBufferMinutes) < manifest.ExpireUtc;
+    }
+
+    /// <summary>
+    /// Возвращает IP исходящего интерфейса через routing table ОС.
+    /// UDP Connect() не отправляет пакетов — только резолвит маршрут.
+    /// 198.18.x.x — признак активного VPN-адаптера (RFC 2544).
+    /// </summary>
+    private static string? GetOutboundIp()
+    {
+        try
+        {
+            using var socket = new System.Net.Sockets.Socket(
+                System.Net.Sockets.AddressFamily.InterNetwork,
+                System.Net.Sockets.SocketType.Dgram,
+                System.Net.Sockets.ProtocolType.Udp);
+
+            socket.Connect("8.8.8.8", 65530);
+            return (socket.LocalEndPoint as System.Net.IPEndPoint)?.Address.ToString();
+        }
+        catch (Exception ex)
+        {
+            Log.Debug($"[AudioEngine] GetOutboundIp failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Триггер А: смена IP (VPN вкл/выкл, смена интерфейса).
+    /// Дебаунс 2с + diff фильтр — исключает шум NetworkAddressChanged.
+    /// </summary>
+    private void OnNetworkAddressChanged(object? sender, EventArgs e)
+    {
+        Log.Debug("[AudioEngine] NetworkAddressChanged event received");
+
+        CancellationTokenSource newCts;
+        lock (_networkRebuildLock)
+        {
+            _networkRebuildCts?.Cancel();
+            _networkRebuildCts?.Dispose();
+            _networkRebuildCts = newCts = CancellationTokenSource
+                .CreateLinkedTokenSource(_lifetimeCts.Token);
+        }
+
+        _ = RebuildNetworkClientsAfterDelayAsync(newCts.Token);
+    }
+
+    /// <summary>
+    /// Пересоздаёт HTTP-клиенты после стабилизации сетевого интерфейса.
+    /// Дебаунс 2с + фильтрация по diff IP исключает шум:
+    /// смену метрик, DHCP renewal, добавление IPv6 link-local.
+    /// </summary>
+    private async Task RebuildNetworkClientsAfterDelayAsync(CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+
+            var currentIp = GetOutboundIp();
+            if (currentIp == null)
+            {
+                Log.Debug("[AudioEngine] Network change ignored — no outbound route");
+                return;
+            }
+
+            if (string.Equals(currentIp, _lastOutboundIp, StringComparison.Ordinal))
+            {
+                Log.Debug($"[AudioEngine] Network change ignored — outbound IP unchanged ({currentIp})");
+                return;
+            }
+
+            Log.Info($"[AudioEngine] Outbound IP changed: {_lastOutboundIp ?? "(none)"} → {currentIp}. Rebuilding.");
+            _lastOutboundIp = currentIp;
+
+            await RebuildNetworkCoreAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Log.Warn($"[AudioEngine] Network rebuild failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Триггер Б: мёртвый туннель с неизменным IP.
+    /// Вызывается при starvation из AudioPlayer.
+    /// Безусловный rebuild — diff не проверяем, туннель уже мёртв.
+    /// </summary>
+    internal void NotifyNetworkStarvation()
+    {
+        Log.Info("[AudioEngine] Network starvation detected — forcing HTTP client rebuild");
+
+        CancellationTokenSource newCts;
+        lock (_networkRebuildLock)
+        {
+            _networkRebuildCts?.Cancel();
+            _networkRebuildCts?.Dispose();
+            _networkRebuildCts = newCts = CancellationTokenSource
+                .CreateLinkedTokenSource(_lifetimeCts.Token);
+        }
+
+        _ = ForceRebuildAfterStarvationAsync(newCts.Token);
+    }
+
+    private async Task ForceRebuildAfterStarvationAsync(CancellationToken ct)
+    {
+        try
+        {
+            // Короткий дебаунс — защита от шторма при серии underrun'ов
+            await Task.Delay(TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
+
+            // Обновляем snapshot — чтобы следующий NetworkAddressChanged
+            // не сделал двойной rebuild если IP не изменился
+            _lastOutboundIp = GetOutboundIp();
+
+            Log.Info($"[AudioEngine] Force rebuild. Current outbound IP: {_lastOutboundIp ?? "(none)"}");
+
+            await RebuildNetworkCoreAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Log.Warn($"[AudioEngine] Force rebuild failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Единая точка пересборки HTTP-клиентов.
+    /// Вызывается из обоих триггеров.
+    /// </summary>
+    private async Task RebuildNetworkCoreAsync()
+    {
+        Audio.Http.SharedHttpClient.Rebuild(_library.Settings.Proxy);
+        _youtube.ReloadClient();
+
+        Log.Info("[AudioEngine] HTTP clients rebuilt.");
+
+        AudioSourceFactory.PreWarmCdnConnections(
+            Audio.Http.SharedHttpClient.Instance, _lifetimeCts.Token);
+
+        await Task.CompletedTask.ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Watchdog для VPN-клиентов без NetworkAddressChanged (WireGuard service на Windows).
+    /// Интервал 3 минуты, 0 сетевых запросов — только routing table ОС.
+    /// </summary>
+    private async Task NetworkWatchdogAsync()
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(30), _lifetimeCts.Token).ConfigureAwait(false);
+
+            while (!_lifetimeCts.Token.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromMinutes(3), _lifetimeCts.Token).ConfigureAwait(false);
+
+                var currentIp = GetOutboundIp();
+                if (currentIp != null
+                    && _lastOutboundIp != null
+                    && !string.Equals(currentIp, _lastOutboundIp, StringComparison.Ordinal))
+                {
+                    Log.Info($"[AudioEngine] Watchdog: IP change missed by NetworkChange event: " +
+                            $"{_lastOutboundIp} → {currentIp}");
+                    OnNetworkAddressChanged(this, EventArgs.Empty);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Log.Warn($"[AudioEngine] Network watchdog error: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Выбирает лучший вариант аудио-потока из списка по совпадению формата контейнера.
     /// </summary>
     private static VariantEntry? SelectBestVariantFromEntry(List<VariantEntry> variants, AudioFormat? preferredFormat)
@@ -1803,7 +2148,7 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
 
     /// <summary>
     /// Пытается извлечь уже известный continuation URL из session cache или provider memory cache,
-    /// если он совместим с выбранным partial-cache variant.
+    /// если он совместим с выбранным partial-cache variant и ссылка ещё жива.
     /// </summary>
     private bool TryGetCompatibleContinuationUrl(
      TrackInfo track,
@@ -1813,7 +2158,8 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
         url = string.Empty;
 
         var manifest = SessionCacheStore.GetManifest(track.Id);
-        if (manifest != null)
+
+        if (manifest != null && IsContinuationUrlLikelyFresh(manifest))
         {
             for (int i = 0; i < manifest.Variants.Count; i++)
             {
@@ -1835,8 +2181,11 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
         if (descriptor is { HasLiveUrl: true } d &&
             IsContinuationVariantCompatible(expectedEntry, d.Format, d.BitrateKbps))
         {
-            url = d.Url;
-            return true;
+            if (d.ExpireUtc == default || DateTime.UtcNow.AddMinutes(5) < d.ExpireUtc)
+            {
+                url = d.Url;
+                return true;
+            }
         }
 
         return false;
@@ -1985,6 +2334,17 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
 
             try { _commandProcessorTask?.Wait(millisecondsTimeout: 500); } catch { }
             try { _volumeSaveTask?.Wait(millisecondsTimeout: 200); } catch { }
+            try { _networkWatchdogTask?.Wait(millisecondsTimeout: 300); } catch { }
+
+            System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged
+                -= OnNetworkAddressChanged;
+
+            lock (_networkRebuildLock)
+            {
+                _networkRebuildCts?.Cancel();
+                _networkRebuildCts?.Dispose();
+                _networkRebuildCts = null;
+            }
 
             _player.Dispose();
             _lifetimeCts.Dispose();
@@ -2056,6 +2416,27 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
             catch (TimeoutException)
             { Log.Warn("[AudioEngine] Volume save loop did not finish within dispose timeout"); }
             catch (Exception ex) when (ex is OperationCanceledException or AggregateException) { }
+        }
+
+        if (_networkWatchdogTask != null)
+        {
+            try
+            {
+                await _networkWatchdogTask
+                    .WaitAsync(TimeSpan.FromMilliseconds(500))
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException or AggregateException) { }
+        }
+
+        System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged
+            -= OnNetworkAddressChanged;
+
+        lock (_networkRebuildLock)
+        {
+            _networkRebuildCts?.Cancel();
+            _networkRebuildCts?.Dispose();
+            _networkRebuildCts = null;
         }
 
         // 7. Async dispose плеера (ожидает его внутренний command processor)

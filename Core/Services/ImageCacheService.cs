@@ -1,6 +1,8 @@
 ﻿using System.Collections.Concurrent;
+using System.Net;
 using System.Runtime.CompilerServices;
 using Avalonia.Media.Imaging;
+using LMP.Core.Audio.Http;
 
 namespace LMP.Core.Services;
 
@@ -28,9 +30,14 @@ public enum ImageQuality
 /// </summary>
 public sealed class ImageCacheService : IDisposable
 {
-    private readonly HttpClient _http;
+    private readonly HttpClient _httpClient;
     private readonly LibraryService _library;
     private readonly SemaphoreSlim _downloadSemaphore = new(6);
+
+    // App-level CTS: управляет жизненным циклом фоновых скачиваний.
+    // Контрол-уровневые CT используются только как decode-gate,
+    // но НЕ прерывают запись файла на диск.
+    private readonly CancellationTokenSource _appCts = new();
 
     /// <summary>
     /// Memory cache. Ключ — FNV-1a hash (ulong), не строка.
@@ -73,11 +80,9 @@ public sealed class ImageCacheService : IDisposable
     public ImageCacheService(LibraryService library)
     {
         _library = library;
-        _http = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(8),
-            DefaultRequestHeaders = { { "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) LMP/1.0" } }
-        };
+
+        // Инициализируем клиент с передачей настроек прокси плеера
+        _httpClient = CreateImageHttpClient(_library.Settings.Proxy);
 
         if (!Directory.Exists(G.Folder.ImageCache))
             Directory.CreateDirectory(G.Folder.ImageCache);
@@ -88,11 +93,68 @@ public sealed class ImageCacheService : IDisposable
     public Task<Bitmap?> GetImageAsync(string url, ImageQuality quality = ImageQuality.Low, CancellationToken ct = default)
         => GetImageAsync(url, (int)quality, ct);
 
+    /// <summary>
+    /// Фабрика изолированного HTTP-клиента для изображений.
+    /// </summary>
+    private static HttpClient CreateImageHttpClient(ProxySettings? proxy)
+    {
+        var handler = new SocketsHttpHandler
+        {
+            MaxConnectionsPerServer = 8,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+            // Быстрый сброс простаивающих соединений, чтобы не копить зомби-сокеты
+            PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30),
+            EnableMultipleHttp2Connections = true,
+
+            // Проактивный пинг: тихо убивает зависшие соединения в фоне, 
+            // предотвращая таймауты при скроллинге или смене трека.
+            KeepAlivePingPolicy = HttpKeepAlivePingPolicy.WithActiveRequests,
+            KeepAlivePingDelay = TimeSpan.FromSeconds(15),
+            KeepAlivePingTimeout = TimeSpan.FromSeconds(5)
+        };
+
+        if (proxy?.Enabled == true && !string.IsNullOrWhiteSpace(proxy.Host))
+        {
+            var webProxy = new WebProxy($"http://{proxy.Host}:{proxy.Port}");
+
+            if (proxy.UseAuth && !string.IsNullOrWhiteSpace(proxy.Username))
+                webProxy.Credentials = new NetworkCredential(proxy.Username, proxy.Password);
+
+            handler.Proxy = webProxy;
+            handler.UseProxy = true;
+        }
+
+        return new HttpClient(handler, disposeHandler: true)
+        {
+            Timeout = TimeSpan.FromSeconds(15),
+            DefaultRequestVersion = HttpVersion.Version20,
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+        };
+    }
+
+    /// <summary>
+    /// Нормализует <paramref name="decodeWidth"/> один раз на входе.
+    /// Нормализованное значение используется и как ключ кэша, и как фактическая ширина decode —
+    /// гарантирует что все callers с разными raw-значениями в одном bucket получают
+    /// идентичный bitmap нужного качества.
+    /// </summary>
     public async Task<Bitmap?> GetImageAsync(string url, int decodeWidth, CancellationToken ct = default)
     {
         if (_isDisposed || string.IsNullOrEmpty(url)) return null;
 
-        var memKey = ComputeMemoryKeyHash(url, decodeWidth);
+        // Нормализация ОДНИМ местом: ключ кэша и фактический decode используют одно значение.
+        // Без этого: width=44 → ключ=120, decode=44 → в кэше 44px bitmap под ключом 120.
+        // Следующий запрос width=100 → ключ=120 → хит → получает 44px вместо 100px.
+        int normalizedWidth = decodeWidth switch
+        {
+            <= 0 => 0,
+            <= 120 => 120,
+            <= 200 => 200,
+            <= 400 => 400,
+            _ => 800
+        };
+
+        var memKey = ComputeMemoryKeyHash(url, normalizedWidth);
 
         // 1. Hot path: Memory cache
         lock (_lruLock)
@@ -100,23 +162,24 @@ public sealed class ImageCacheService : IDisposable
             if (_memoryCache.TryGetValue(memKey, out var cached))
             {
                 TouchLruUnsafe(memKey);
-                return cached.Bitmap; // ← просто возвращаем, без AddRef
+                return cached.Bitmap;
             }
         }
 
-        // 2. Cold path: дедупликация через Lazy<Task>
+        // 2. Cold path: дедупликация
+        var appToken = _appCts.Token;
         var lazyTask = _pendingLoads.GetOrAdd(
             memKey,
             static (k, state) => new Lazy<Task<Bitmap?>>(() =>
-                state.self.LoadImageInternalAsync(state.url, k, state.decodeWidth, state.ct)),
-            (self: this, url, decodeWidth, ct));
+                state.self.LoadImageInternalAsync(state.url, k, state.normalizedWidth, state.appToken)),
+            (self: this, url, normalizedWidth, appToken));  // ← normalizedWidth, не decodeWidth
 
+        Bitmap? bitmap;
         try
         {
-            var bitmap = await lazyTask.Value.ConfigureAwait(false);
-            // ← убрать блок AddRef для вызывающего — кэш держит единственный ref
-            return bitmap;
+            bitmap = await lazyTask.Value.ConfigureAwait(false);
         }
+        catch (OperationCanceledException) { return null; }
         catch { return null; }
         finally
         {
@@ -125,6 +188,9 @@ public sealed class ImageCacheService : IDisposable
             if (Interlocked.Increment(ref _loadCounter) % CleanupInterval == 0)
                 _ = Task.Run(PerformMaintenanceAsync, CancellationToken.None);
         }
+
+        if (ct.IsCancellationRequested) return null;
+        return bitmap;
     }
 
     /// <summary>
@@ -169,9 +235,13 @@ public sealed class ImageCacheService : IDisposable
         catch { }
     }
 
+    /// <summary>
+    /// Внутренняя загрузка: disk-check → download → decode → memory cache.
+    /// Принимает <paramref name="ct"/> уровня приложения (не контрола):
+    /// скачивание файла не прерывается при рециклинге элемента списка.
+    /// </summary>
     private async Task<Bitmap?> LoadImageInternalAsync(string url, ulong memKey, int decodeWidth, CancellationToken ct)
     {
-        // Строка для имени файла создаётся только здесь (cold path, cache miss)
         var diskHash = ComputeDiskKeyHash(url);
         var diskPath = Path.Combine(G.Folder.ImageCache, diskHash.ToString("X16"));
 
@@ -183,14 +253,13 @@ public sealed class ImageCacheService : IDisposable
                 if (!File.Exists(diskPath))
                     await DownloadDirectToDiskAsync(url, diskPath, ct).ConfigureAwait(false);
             }
+            catch (OperationCanceledException) { return null; }
             catch { return null; }
             finally { _downloadSemaphore.Release(); }
         }
 
         if (!File.Exists(diskPath)) return null;
 
-        // LowQuality для thumbnail (44×44): визуально идентично MediumQuality,
-        // но decoder пропускает bicubic filter pass — ~30% быстрее decode.
         var bitmap = await Task.Run(() =>
         {
             try
@@ -209,17 +278,15 @@ public sealed class ImageCacheService : IDisposable
         }, ct).ConfigureAwait(false);
 
         if (bitmap != null && !ct.IsCancellationRequested)
-        {
             AddToMemoryCache(memKey, bitmap);
-            return bitmap;
-        }
 
-        return null;
+        return bitmap;
     }
 
     /// <summary>
-    /// Скачивание напрямую в файл без MemoryStream.
-    /// Атомарное переименование (.tmp → final) для потокобезопасности.
+    /// Скачивание файла на диск через изолированный <see cref="_httpClient"/>.
+    /// Не зависит от состояния <c>SharedHttpClient.Instance</c>:
+    /// пересборка аудио-клиента при смене IP не прерывает загрузку thumbnails.
     /// </summary>
     private async Task DownloadDirectToDiskAsync(string url, string finalPath, CancellationToken ct)
     {
@@ -227,17 +294,24 @@ public sealed class ImageCacheService : IDisposable
 
         try
         {
-            using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct)
+            // _httpClient — изолирован, не SharedHttpClient.Instance
+            using var response = await _httpClient
+                .GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct)
                 .ConfigureAwait(false);
+
             if (!response.IsSuccessStatusCode) return;
 
-            await using (var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
-            await using (var net = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false))
+            await using (var fs = new FileStream(
+                tmpPath, FileMode.Create, FileAccess.Write,
+                FileShare.None, 81920, useAsync: true))
+            await using (var net = await response.Content
+                .ReadAsStreamAsync(ct)
+                .ConfigureAwait(false))
             {
                 await net.CopyToAsync(fs, ct).ConfigureAwait(false);
             }
 
-            File.Move(tmpPath, finalPath, true);
+            File.Move(tmpPath, finalPath, overwrite: true);
             Interlocked.Add(ref _currentDiskCacheBytes, new FileInfo(finalPath).Length);
         }
         catch
@@ -249,23 +323,24 @@ public sealed class ImageCacheService : IDisposable
 
     /// <summary>
     /// Добавляет bitmap в memory cache с LRU eviction.
-    /// 
-    /// <para><b>Memory pressure:</b> GC.AddMemoryPressure вызывается ПОСЛЕ
-    /// успешной вставки. При дубликате — bitmap диспозится без pressure,
-    /// т.к. оригинал уже учтён.</para>
+    /// GC pressure вызовы вынесены ЗА пределы <c>_lruLock</c>:
+    /// p/invoke в CLR runtime не должен блокировать параллельных читателей кэша.
     /// </summary>
     private void AddToMemoryCache(ulong key, Bitmap bitmap)
     {
         var entry = new RefCountedBitmap(bitmap);
         long estimatedBytes = entry.EstimatedBytes;
+        bool added = false;
+        long evictedBytes = 0;
 
+        // LRU eviction под локом
         lock (_lruLock)
         {
             while ((_memoryCache.Count >= MaxMemoryItems ||
                     _currentMemoryCacheBytes + estimatedBytes > MaxMemoryBytes)
-                   && _lruOrder.Last != null)
+                && _lruOrder.Last != null)
             {
-                EvictLastUnsafe();
+                evictedBytes += EvictLastUnsafe();
             }
 
             if (!_memoryCache.ContainsKey(key))
@@ -274,13 +349,42 @@ public sealed class ImageCacheService : IDisposable
                 var node = _lruOrder.AddFirst(key);
                 _lruIndex[key] = node;
                 Interlocked.Add(ref _currentMemoryCacheBytes, estimatedBytes);
-                GC.AddMemoryPressure(estimatedBytes);
+                added = true;
             }
             else
             {
                 entry.Dispose();
             }
         }
+
+        // --- Section: GC pressure вне лока ---
+        if (evictedBytes > 0)
+            GC.RemoveMemoryPressure(evictedBytes);
+
+        if (added)
+            GC.AddMemoryPressure(estimatedBytes);
+    }
+
+    /// <summary>
+    /// Вызывается с захваченным <c>_lruLock</c>.
+    /// Возвращает размер вытесненного bitmap для последующего
+    /// <see cref="GC.RemoveMemoryPressure"/> вне лока.
+    /// </summary>
+    private long EvictLastUnsafe()
+    {
+        var lastNode = _lruOrder.Last!;
+        var key = lastNode.Value;
+        _lruOrder.RemoveLast();
+        _lruIndex.Remove(key);
+
+        if (_memoryCache.Remove(key, out var removed))
+        {
+            var bytes = removed.EstimatedBytes;
+            Interlocked.Add(ref _currentMemoryCacheBytes, -bytes);
+            return bytes;
+        }
+
+        return 0;
     }
 
     /// <summary>
@@ -293,36 +397,6 @@ public sealed class ImageCacheService : IDisposable
         {
             _lruOrder.Remove(node);
             _lruOrder.AddFirst(node);
-        }
-    }
-
-    /// <summary>
-    /// Вызывается с уже захваченным _lruLock.
-    /// Удаляет хвостовой элемент LRU. O(1).
-    ///
-    /// <para><b>ВАЖНО:</b> Bitmap НЕ диспозится намеренно.
-    /// ImageCacheService возвращает Bitmap напрямую в Image.Source.
-    /// Image не имеет механизма release при смене Source → кэш не знает
-    /// когда bitmap перестал использоваться UI-слоем.
-    /// Bitmap будет собран GC когда Image.Source сменится и
-    /// последняя ссылка исчезнет.</para>
-    ///
-    /// <para>GC.RemoveMemoryPressure вызывается: кэш больше не отвечает
-    /// за эту память, даже если Image.Source всё ещё держит bitmap.</para>
-    /// </summary>
-    private void EvictLastUnsafe()
-    {
-        var lastNode = _lruOrder.Last!;
-        var key = lastNode.Value;
-        _lruOrder.RemoveLast();
-        _lruIndex.Remove(key);
-
-        if (_memoryCache.Remove(key, out var removed))
-        {
-            var bytes = removed.EstimatedBytes;
-            Interlocked.Add(ref _currentMemoryCacheBytes, -bytes);
-            GC.RemoveMemoryPressure(bytes);
-            // ← removed.Dispose() УБРАН: bitmap может быть в Image.Source
         }
     }
 
@@ -387,10 +461,6 @@ public sealed class ImageCacheService : IDisposable
 
     /// <summary>
     /// Полностью очищает memory cache.
-    ///
-    /// <para><b>ВАЖНО:</b> Bitmap-ы не диспозятся — они могут использоваться
-    /// в Image.Source контролов в данный момент. Вызов Dispose() при живых
-    /// Image-контролах вызывает ObjectDisposedException в layout pass.</para>
     /// </summary>
     public void ClearMemoryCache()
     {
@@ -399,13 +469,13 @@ public sealed class ImageCacheService : IDisposable
         lock (_lruLock)
         {
             totalBytes = _currentMemoryCacheBytes;
-
             _memoryCache.Clear();
             _lruOrder.Clear();
             _lruIndex.Clear();
             Volatile.Write(ref _currentMemoryCacheBytes, 0);
         }
 
+        // Вне лока
         if (totalBytes > 0)
             GC.RemoveMemoryPressure(totalBytes);
     }
@@ -458,21 +528,12 @@ public sealed class ImageCacheService : IDisposable
     }
 
     /// <summary>
-    /// FNV-1a 64-bit хеш URL + нормализованная ширина. Используется как ключ memory cache.
-    /// Zero-alloc: Dictionary{ulong} lookup = чистая арифметика, без string аллокаций.
-    /// Нормализация ширины (120/200/400/800) уменьшает количество уникальных ключей.
+    /// FNV-1a 64-bit хеш URL + ширина. Нормализация ширины выполнена вызывающим кодом
+    /// единожды: <see cref="GetImageAsync"/> нормализует до вызова этого метода.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ulong ComputeMemoryKeyHash(ReadOnlySpan<char> url, int decodeWidth)
+    private static ulong ComputeMemoryKeyHash(ReadOnlySpan<char> url, int normalizedWidth)
     {
-        var normalizedWidth = decodeWidth switch
-        {
-            <= 120 => 120,
-            <= 200 => 200,
-            <= 400 => 400,
-            _ => 800
-        };
-
         ulong hash = FnvOffsetBasis;
 
         foreach (char c in url)
@@ -483,11 +544,8 @@ public sealed class ImageCacheService : IDisposable
             hash *= FnvPrime;
         }
 
-        // Разделитель для разграничения URL и ширины в хеш-пространстве
         hash ^= (byte)'_';
         hash *= FnvPrime;
-
-        // Ширина побайтово — дешевле чем TryFormat + посимвольный хеш
         hash ^= (byte)(normalizedWidth & 0xFF);
         hash *= FnvPrime;
         hash ^= (byte)((normalizedWidth >> 8) & 0xFF);
@@ -511,8 +569,10 @@ public sealed class ImageCacheService : IDisposable
     {
         if (_isDisposed) return;
         _isDisposed = true;
+        _appCts.Cancel();
+        _appCts.Dispose();
+        _httpClient.Dispose();
         ClearMemoryCache();
         _downloadSemaphore.Dispose();
-        _http.Dispose();
     }
 }

@@ -25,6 +25,14 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
     private const int FallbackPositionIntervalMs = 500;
     private const int ShuffleAnimationDurationMs = 500;
 
+    /// <summary>
+    /// Максимальная допустимая разница битрейтов (kbps) для сопоставления
+    /// скачанного формата с записью в кэше.
+    /// Исключает ложные совпадения в пределах одного нормализованного bucket'а
+    /// (например, 55 и 69 kbps → оба попадают в bucket 64, delta = 14 > 10).
+    /// </summary>
+    private const int BitrateMatchEpsilonKbps = 10;
+
     /// <summary>Таймаут, после которого состояние Reset считается зависшим (сек).</summary>
     private const int StaleResetTimeoutSec = 3;
 
@@ -304,6 +312,7 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
     public ReactiveCommand<Unit, Unit> ToggleMuteCommand { get; private set; } = null!;
     public ReactiveCommand<Unit, Unit> CopyLinkCommand { get; private set; } = null!;
     public ReactiveCommand<Unit, Unit> LoadFormatsCommand { get; private set; } = null!;
+    public ReactiveCommand<Unit, Unit> ForceLoadFormatsCommand { get; private set; } = null!;
     public ReactiveCommand<StreamOption, Unit> SwitchFormatCommand { get; private set; } = null!;
 
     #endregion
@@ -466,13 +475,12 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
             }
         }, hasTrackObs));
 
-        LoadFormatsCommand = CreateCommand(ReactiveCommand.CreateFromTask(LoadFormatsAsync));
+        LoadFormatsCommand = CreateCommand(ReactiveCommand.CreateFromTask(() => LoadFormatsAsync(forceRefresh: false)));
+        ForceLoadFormatsCommand = CreateCommand(ReactiveCommand.CreateFromTask(() => LoadFormatsAsync(forceRefresh: true)));
 
         SwitchFormatCommand = CreateCommand(ReactiveCommand.CreateFromTask<StreamOption>(async option =>
         {
             if (option == null) return;
-            foreach (var f in AvailableFormats) f.IsActive = false;
-            option.IsActive = true;
             BeginTrackReset();
             await _audio.SwitchQualityAsync(option.Format, (int)option.Bitrate);
         }));
@@ -600,6 +608,7 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
                 h => (t, f, b, d) => h((t, f, b, d)),
                 h => cacheManager.OnFormatCached += h,
                 h => cacheManager.OnFormatCached -= h)
+            .ObserveOn(RxSchedulers.MainThreadScheduler)
             .Subscribe(x => OnFormatCached(x.TrackId, x.Format, x.Bitrate, x.Downloaded))
             .DisposeWith(Disposables);
 
@@ -715,10 +724,12 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
         if (!HasTrack || CurrentTrack == null || IsTrackResetting)
             return;
 
-        if (CurrentTrack.IsDownloaded)
+        bool isPlayingLocalFile = _audio.StreamInfo.IsValid && _audio.StreamInfo.IsFromCache;
+
+        if (isPlayingLocalFile)
         {
             SetFullyBuffered();
-            UpdateNetworkStats(0, 0); // Отключаем стату для локальных файлов
+            UpdateNetworkStats(0, 0); // Отключаем стату сети только если АКТИВНЫЙ поток действительно локальный
             return;
         }
 
@@ -950,9 +961,6 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
 
             var storedTrack = _library.GetTrack(track.Id);
             IsLiked = storedTrack?.IsLiked ?? track.IsLiked;
-
-            if (track.IsDownloaded)
-                SetFullyBuffered();
         }
         else
         {
@@ -1067,7 +1075,8 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
     /// </summary>
     private void UpdateStreamInfo(AudioStreamInfo info)
     {
-        Log.Debug($"[PlayerBar] StreamInfo UI update: track={CurrentTrack?.Id}, valid={info.IsValid}, display='{info.FormatDisplay}', duration={info.DurationMs}ms");
+        Log.Debug($"[PlayerBar] StreamInfo UI update: track={CurrentTrack?.Id}, valid={info.IsValid}, " +
+                  $"display='{info.FormatDisplay}', duration={info.DurationMs}ms");
 
         if (CurrentTrack == null)
         {
@@ -1085,19 +1094,16 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
             DurationSeconds = Duration.TotalSeconds > 0 ? Duration.TotalSeconds : 1;
             this.RaisePropertyChanged(nameof(DurationTooltip));
 
-            int normalizedInfoBitrate = AudioConstants.NormalizeBitrate(info.Bitrate);
+            UpdateActiveFormat(info.Format, info.Bitrate);
 
-            foreach (var f in AvailableFormats)
-            {
-                int normalizedFormatBitrate = AudioConstants.NormalizeBitrate((int)f.Bitrate);
-                f.IsActive = f.Format == info.Format &&
-                             normalizedInfoBitrate == normalizedFormatBitrate;
-            }
+            SyncFormatDownloadStatus();
 
             if (IsTrackResetting)
             {
-                bool isForCurrentTrack = (!string.IsNullOrEmpty(info.TrackId) && CurrentTrack.Id == info.TrackId)
-                                         || (string.IsNullOrEmpty(info.TrackId) && _pendingStreamInfoTrackId == CurrentTrack.Id);
+                bool isForCurrentTrack =
+                    (!string.IsNullOrEmpty(info.TrackId) && CurrentTrack.Id == info.TrackId)
+                    || (string.IsNullOrEmpty(info.TrackId)
+                        && _pendingStreamInfoTrackId == CurrentTrack.Id);
 
                 if (isForCurrentTrack)
                 {
@@ -1105,6 +1111,8 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
                     EndTrackReset();
                 }
             }
+
+            SyncBufferState();
         }
         else
         {
@@ -1247,6 +1255,38 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
 
     #region Private Helpers
 
+    /// <summary>
+    /// Устанавливает <see cref="StreamOption.IsActive"/> ровно у одного формата —
+    /// ближайшего по битрейту среди совпадающих по контейнеру.
+    /// Решает проблему когда NormalizeBitrate(70) == NormalizeBitrate(55) == 64
+    /// и оба формата ложно получают IsActive = true.
+    /// </summary>
+    private void UpdateActiveFormat(AudioFormat format, int infoBitrate)
+    {
+        // Сброс всех флагов
+        foreach (var f in AvailableFormats)
+            f.IsActive = false;
+
+        if (AvailableFormats.Count == 0) return;
+
+        // Ищем единственный ближайший по raw-битрейту формат того же контейнера
+        StreamOption? bestMatch = null;
+        int bestDelta = int.MaxValue;
+
+        foreach (var f in AvailableFormats)
+        {
+            if (f.Format != format) continue;
+            int delta = Math.Abs((int)f.Bitrate - infoBitrate);
+            if (delta < bestDelta)
+            {
+                bestDelta = delta;
+                bestMatch = f;
+            }
+        }
+
+        bestMatch?.IsActive = true;
+    }
+
     private void SyncPositionFromEngine()
     {
         var realPos = _audio.CurrentPosition;
@@ -1284,16 +1324,105 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
 
     #region Format Loading
 
-    private async Task LoadFormatsAsync()
+    /// <summary>
+    /// Синхронизирует <see cref="StreamOption.IsDownloaded"/> для каждого элемента
+    /// <see cref="AvailableFormats"/> на основе текущего состояния кэша и явного скачивания.
+    /// Использует аддитивную логику: только устанавливает <c>true</c>, никогда не сбрасывает.
+    /// Полный сброс происходит только при пересоздании списка в <see cref="LoadFormatsAsync"/>.
+    /// </summary>
+    private void SyncFormatDownloadStatus()
+    {
+        if (CurrentTrack == null || AvailableFormats.Count == 0)
+            return;
+
+        var cache = AudioSourceFactory.GlobalCache;
+        var cachedFormats = cache?.GetCachedFormats(CurrentTrack.Id) ?? [];
+
+        Log.Debug($"[PlayerBar] SyncDownloadStatus: track={CurrentTrack.Id}, " +
+                  $"cachedFormats=[{string.Join(", ", cachedFormats.Select(f => $"{f.Format}/{f.Bitrate}"))}], " +
+                  $"isDownloaded={CurrentTrack.IsDownloaded}, localPath={CurrentTrack.LocalPath ?? "null"}, " +
+                  $"preferredBitrate={CurrentTrack.PreferredBitrate}, " +
+                  $"formats=[{string.Join(", ", AvailableFormats.Select(f => $"{f.Format}/{f.Bitrate:F0}"))}]");
+
+        // Phase 1: Hidden cache — epsilon-based bitrate matching
+        foreach (var f in AvailableFormats)
+        {
+            if (f.IsDownloaded) continue;
+
+            foreach (var (cachedFormat, cachedBitrate) in cachedFormats)
+            {
+                if (f.Format == cachedFormat
+                    && Math.Abs((int)f.Bitrate - cachedBitrate) <= BitrateMatchEpsilonKbps)
+                {
+                    f.IsDownloaded = true;
+                    break;
+                }
+            }
+        }
+
+        // Phase 2: Explicit download — closest match по контейнеру
+        bool isExplicitDownload = CurrentTrack.IsDownloaded
+            && !string.IsNullOrEmpty(CurrentTrack.LocalPath)
+            && File.Exists(CurrentTrack.LocalPath);
+
+        if (isExplicitDownload)
+        {
+            AudioFormat explicitFormat = AudioSourceFactory.DetectFormat(CurrentTrack.LocalPath!);
+            if (explicitFormat == AudioFormat.Unknown)
+                explicitFormat = AudioFormat.WebM;
+
+            int referenceBitrate = EstimateRawBitrateFromFile(CurrentTrack);
+
+            StreamOption? bestMatch = null;
+            int bestDelta = int.MaxValue;
+
+            foreach (var f in AvailableFormats)
+            {
+                if (f.Format != explicitFormat) continue;
+                int delta = Math.Abs((int)f.Bitrate - referenceBitrate);
+                if (delta < bestDelta)
+                {
+                    bestDelta = delta;
+                    bestMatch = f;
+                }
+            }
+
+            bestMatch?.IsDownloaded = true;
+        }
+    }
+
+    /// <summary>
+    /// Оценивает сырой (ненормализованный) битрейт скачанного файла.
+    /// Используется для fuzzy-matching при неизвестном <c>PreferredBitrate</c>.
+    /// </summary>
+    private static int EstimateRawBitrateFromFile(TrackInfo track)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(track.LocalPath) || track.Duration.TotalSeconds <= 0)
+                return 128;
+
+            long fileSize = new FileInfo(track.LocalPath).Length;
+            return Math.Max((int)(fileSize * 8 / track.Duration.TotalSeconds / 1000), 32);
+        }
+        catch
+        {
+            return 128;
+        }
+    }
+
+    private async Task LoadFormatsAsync(bool forceRefresh = false)
     {
         if (CurrentTrack == null) return;
 
-        if (_restrictedTracks.TryGetValue(CurrentTrack.Id, out var cachedReason))
+        string videoId = CurrentTrack.Id.Replace("yt_", "");
+
+        if (!forceRefresh && _restrictedTracks.TryGetValue(CurrentTrack.Id, out var cachedReason))
         {
             await HandleMissingFormatsNotificationAsync(
                 new LoginRequiredException(
                     "Cached authorization restriction",
-                    CurrentTrack.Id.Replace("yt_", ""),
+                    videoId,
                     cachedReason),
                 "Cached authorization requirement");
             AvailableFormats.Clear();
@@ -1312,8 +1441,7 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
 
         try
         {
-            string videoId = CurrentTrack.Id.Replace("yt_", "");
-            formats = await _youtube.GetStreamOptionsAsync(videoId, token);
+            formats = await _youtube.GetStreamOptionsAsync(videoId, token, forceRefresh);
         }
         catch (OperationCanceledException)
         {
@@ -1371,33 +1499,30 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
         if (token.IsCancellationRequested) return;
 
         var (currentFormat, currentBitrate, _) = _audio.GetCurrentStreamInfo();
-        var cache = AudioSourceFactory.GlobalCache;
-        var cachedFormats = cache?.GetCachedFormats(CurrentTrack.Id) ?? [];
 
         AvailableFormats.Clear();
 
-        int normalizedCurrentBitrate = AudioConstants.NormalizeBitrate(currentBitrate);
-
         foreach (var f in formats)
         {
-            int normalizedFormatBitrate = AudioConstants.NormalizeBitrate((int)f.Bitrate);
-
-            f.IsDownloaded = cachedFormats.Any(cached =>
-            {
-                int normalizedCachedBitrate = AudioConstants.NormalizeBitrate(cached.Bitrate);
-                return f.Format == cached.Format &&
-                       normalizedFormatBitrate == normalizedCachedBitrate;
-            });
-
-            f.IsActive = f.Format == currentFormat &&
-                         normalizedFormatBitrate == normalizedCurrentBitrate;
-
             AvailableFormats.Add(f);
         }
 
-        bool hasValidPhysicalFormats = formats.Any(f =>
-            f.SizeMb > 0 &&
-            f.Format != AudioFormat.Hls);
+        // Единый источник правды для IsActive
+        UpdateActiveFormat(currentFormat, currentBitrate);
+
+        // Аддитивно устанавливает IsDownloaded=true для кэшированных
+        SyncFormatDownloadStatus();
+
+        // Проверка наличия физических форматов (без LINQ)
+        bool hasValidPhysicalFormats = false;
+        foreach (var f in formats)
+        {
+            if (f.SizeMb > 0 && f.Format != AudioFormat.Hls)
+            {
+                hasValidPhysicalFormats = true;
+                break;
+            }
+        }
 
         if (hasError || !hasValidPhysicalFormats)
         {
@@ -1408,7 +1533,7 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
             await HandleMissingFormatsNotificationAsync(caughtException, errorMessage);
         }
 
-        Log.Debug($"Loaded {AvailableFormats.Count} formats, {cachedFormats.Count} cached");
+        Log.Debug($"Loaded {AvailableFormats.Count} formats");
     }
 
     private async Task HandleMissingFormatsNotificationAsync(Exception? exception, string? errorMessage)
@@ -1420,6 +1545,7 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
             YoutubeNetworkException netEx => netEx.GetLocalizationKey(),
             LoginRequiredException lre => lre.GetLocalizationKey(),
             BotDetectionException => "Error_Login_BotDetection",
+            VideoUnplayableException => "Error_Video_Unavailable",
             _ => "Error_Stream_Generic"
         };
 
@@ -1435,6 +1561,7 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
                 _ => "Recommendation_Login"
             },
             BotDetectionException => "Recommendation_BotDetection",
+            VideoUnplayableException => "Recommendation_VideoUnavailable",
             _ => null
         };
 
@@ -1493,24 +1620,23 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
     {
         if (CurrentTrack == null || CurrentTrack.Id != trackId) return;
 
-        int normalizedIncomingBitrate = AudioConstants.NormalizeBitrate(bitrate);
+        if (!isDownloaded) return;
+
         bool found = false;
 
         foreach (var streamFormat in AvailableFormats)
         {
-            int normalizedFormatBitrate = AudioConstants.NormalizeBitrate((int)streamFormat.Bitrate);
-
-            if (streamFormat.Format == format &&
-                normalizedFormatBitrate == normalizedIncomingBitrate)
+            if (streamFormat.Format == format
+                && Math.Abs((int)streamFormat.Bitrate - bitrate) <= BitrateMatchEpsilonKbps)
             {
-                streamFormat.IsDownloaded = isDownloaded;
+                streamFormat.IsDownloaded = true;
                 found = true;
                 break;
             }
         }
 
         if (!found && AvailableFormats.Count > 0)
-            _ = LoadFormatsAsync();
+            SyncFormatDownloadStatus();
     }
 
     #endregion
