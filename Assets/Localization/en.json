@@ -443,6 +443,7 @@
   "Network_StatusProxy":     "Connected via proxy {0}:{1}",
   "Network_StatusNoInternet":"No internet connection",
   "Network_StatusError":     "YouTube is unreachable",
+  "Network_StatusCdnBlocked": "YouTube is available, but the audio CDN (googlevideo.com) is blocked. Add *.googlevideo.com to your DPI bypass settings.",
   "Network_TestButton":      "Test Connection",
   "Network_Testing":         "Testing...",
 

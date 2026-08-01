@@ -1675,6 +1675,9 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
                 return;
             }
 
+            // --- CDN проверка: отдельно от основного сайта ---
+            bool cdnReachable = await ProbeCdnAsync().ConfigureAwait(false);
+
             NetworkLatencyMs = (int)sw.ElapsedMilliseconds;
 
             if (ProxyEnabled && !string.IsNullOrWhiteSpace(ProxyHost))
@@ -1686,6 +1689,16 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
             else if (vpnDetected)
             {
                 SetNetworkStatus(NetworkStatusKind.VpnDetected, SL["Network_StatusVpn"]);
+            }
+            else if (!cdnReachable)
+            {
+                // YouTube доступен, но CDN нет — классический признак DPI без обхода CDN.
+                // Подсказываем пользователю что нужно добавить googlevideo.com в список.
+                SetNetworkStatus(
+                    NetworkStatusKind.Error,
+                    SL["Network_StatusCdnBlocked"]);
+                // "YouTube доступен, но аудио-сервер (CDN) заблокирован. 
+                //  Если используете zapret — добавьте *.googlevideo.com в список хостов."
             }
             else
             {
@@ -1700,6 +1713,37 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
         finally
         {
             IsNetworkTesting = false;
+        }
+    }
+
+    /// <summary>
+    /// Проверяет доступность YouTube CDN (googlevideo.com) отдельно от основного сайта.
+    /// Это критично для пользователей zapret/DPI bypass: основной сайт может работать,
+    /// а CDN (откуда идёт аудио) — блокироваться DPI.
+    /// </summary>
+    private static async Task<bool> ProbeCdnAsync()
+    {
+        // Берём один из известных CDN edge-серверов
+        // redirector.googlevideo.com — единая точка входа YouTube CDN
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get, "https://redirector.googlevideo.com/generate_204");
+
+            request.Version = System.Net.HttpVersion.Version11;
+            request.Headers.TryAddWithoutValidation("User-Agent",
+                YoutubeClientUtils.UaWebRemix);
+
+            using var response = await Core.Audio.Http.SharedHttpClient.Instance
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token)
+                .ConfigureAwait(false);
+
+            return (int)response.StatusCode is >= 200 and <= 399;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -1760,6 +1804,24 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
                 // Loopback
                 if (iface.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
                     continue;
+
+                // --- Исключаем LAN-only виртуальные сети (НЕ маршрутизируют интернет) ---
+                if (descLow.Contains("radmin") ||
+                    descLow.Contains("hamachi") ||
+                    descLow.Contains("zerotier") ||
+                    descLow.Contains("logmein") ||
+                    nameLow.Contains("radmin"))
+                {
+#if DEBUG
+                    // Логируем только базовый адаптер, не суб-фильтры (QoS, WFP, Npcap и т.д.)
+                    if (!nameLow.Contains("--") && !nameLow.Contains("-wfp") &&
+                        !nameLow.Contains("-qos") && !nameLow.Contains("-npcap"))
+                    {
+                        Log.Debug($"[Settings] Skipping LAN-only virtual adapter: {name}");
+                    }
+#endif
+                    continue;
+                }
 
                 // Microsoft Teredo / 6to4 — IPv6 tunnel, не VPN
                 if (descLow.Contains("teredo") || descLow.Contains("6to4") || nameLow.Contains("teredo"))

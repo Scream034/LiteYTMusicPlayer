@@ -443,6 +443,7 @@
   "Network_StatusProxy":     "Подключено через прокси {0}:{1}",
   "Network_StatusNoInternet":"Нет подключения к интернету",
   "Network_StatusError":     "YouTube недоступен",
+  "Network_StatusCdnBlocked": "YouTube доступен, но аудио CDN (googlevideo.com) заблокирован. Добавьте *.googlevideo.com в настройки DPI-обхода.",
   "Network_TestButton":      "Проверить соединение",
   "Network_Testing":         "Проверяем...",
 

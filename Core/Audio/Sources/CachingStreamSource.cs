@@ -349,7 +349,6 @@ public sealed partial class CachingStreamSource : IAudioSource
     /// <param name="format">Аудио-формат контейнера.</param>
     /// <param name="codec">Аудио-кодек.</param>
     /// <param name="bitrate">Битрейт в kbps.</param>
-    /// <param name="httpClient">HTTP-клиент для загрузки.</param>
     /// <param name="cacheManager">Менеджер дискового кэша.</param>
     /// <param name="config">Конфигурация стриминга.</param>
     /// <param name="urlRefresher">Делегат обновления URL при 403.</param>
@@ -670,9 +669,6 @@ public sealed partial class CachingStreamSource : IAudioSource
         long targetBytePos = Math.Min(seekInfo.Value.BytePosition, Math.Max(0, _contentLength - 1));
         return HasMinimalLocalSeekStartData(targetBytePos);
     }
-
-    #endregion
-    #region Warning Events
 
     #endregion
 

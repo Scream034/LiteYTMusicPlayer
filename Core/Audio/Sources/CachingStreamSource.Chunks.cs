@@ -611,8 +611,9 @@ public sealed partial class CachingStreamSource
                                 .ConfigureAwait(false);
                             if (diskRead > 0) return diskRead;
 
-                            consecutiveNetworkFailures++;
-                            await Task.Delay(NetworkRetryBaseMs, ct).ConfigureAwait(false);
+                            Log.Debug($"[CachingSource] ReadAt {position}: data not at expected " +
+                                      "offset after successful download, retrying alignment...");
+                            await Task.Delay(ReadAtEpochRetryDelayMs, ct).ConfigureAwait(false);
                             continue;
                         }
 

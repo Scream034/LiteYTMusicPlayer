@@ -286,11 +286,13 @@ public sealed partial class CachingStreamSource
             fired++;
         }
 
+#if DEBUG
         if (fired > 0)
         {
             Log.Debug($"[CachingSource] Completion fill: {fired} gap request(s) fired " +
                       $"({_cacheEntry.DownloadProgress:F0}% → 100%)");
         }
+#endif
     }
 
     /// <summary>
