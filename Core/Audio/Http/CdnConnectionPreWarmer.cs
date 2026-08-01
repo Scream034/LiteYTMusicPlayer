@@ -11,6 +11,8 @@ internal static class CdnConnectionPreWarmer
     private const string GoogleVideoCdnSuffix = ".googlevideo.com";
     private const string GenerateEndpoint = "/generate_204";
     private const int MaxTrackedHosts = 4;
+    // Порог: 2 таймаута подряд = туннель мёртв.
+    private const int TunnelDeadTimeoutThreshold = 2;
 
     private static readonly TimeSpan WarmCooldown = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan WarmTimeout = TimeSpan.FromSeconds(5);
@@ -20,6 +22,18 @@ internal static class CdnConnectionPreWarmer
 
     private static readonly Lock _lock = new();
     private static readonly LinkedList<(string Host, DateTime WarmTime)> _recentHosts = new();
+
+    /// <summary>
+    /// Вызывается при обнаружении N последовательных таймаутов одного CDN-хоста.
+    /// AudioEngine подписывается и вызывает NotifyNetworkStarvation() — проактивно,
+    /// до того как буфер исчерпается.
+    /// </summary>
+    internal static event Action? OnTunnelDeadDetected;
+
+    // Счётчик последовательных таймаутов по хосту.
+    // ConcurrentDictionary: WarmHostCoreAsync вызывается из fire-and-forget Task.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int>
+        _consecutiveTimeouts = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Регистрирует CDN-хост после успешного HTTP-ответа.
@@ -140,16 +154,35 @@ internal static class CdnConnectionPreWarmer
 
             sw.Stop();
 
+            // Успех — сбрасываем счётчик таймаутов для этого хоста
+            _consecutiveTimeouts.TryRemove(host, out _);
+
             CdnHostStatsStore.RecordTtfb(host, sw.ElapsedMilliseconds);
             CdnHostStatsStore.FlushIfNeeded();
 
-            Log.Debug($"[CdnPreWarmer] {TruncateHost(host)}... warm in {sw.ElapsedMilliseconds}ms (HTTP {(int)response.StatusCode})");
+            Log.Debug($"[CdnPreWarmer] {TruncateHost(host)}... warm in {sw.ElapsedMilliseconds}ms " +
+                      $"(HTTP {(int)response.StatusCode})");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (OperationCanceledException)
         {
             sw.Stop();
-            Log.Debug($"[CdnPreWarmer] {TruncateHost(host)}... timed out ({sw.ElapsedMilliseconds}ms)");
+
+            // Timeout — инкрементируем счётчик и проверяем порог
+            int count = _consecutiveTimeouts.AddOrUpdate(host, 1, (_, c) => c + 1);
+
+            Log.Debug($"[CdnPreWarmer] {TruncateHost(host)}... timed out ({sw.ElapsedMilliseconds}ms) " +
+                      $"[consecutive timeouts: {count}/{TunnelDeadTimeoutThreshold}]");
+
+            if (count >= TunnelDeadTimeoutThreshold)
+            {
+                Log.Warn($"[CdnPreWarmer] {TruncateHost(host)}... " +
+                         $"{TunnelDeadTimeoutThreshold} consecutive timeouts — tunnel likely dead, " +
+                         "firing OnTunnelDeadDetected");
+
+                _consecutiveTimeouts.TryRemove(host, out _); // сбрасываем чтобы не спамить
+                OnTunnelDeadDetected?.Invoke();
+            }
         }
         catch (Exception ex)
         {

@@ -1732,7 +1732,15 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
 
     /// <summary>
     /// Проверяет наличие активного VPN-интерфейса среди сетевых адаптеров Windows.
-    /// Детектирует Tunnel-тип, а также TAP/TUN/WireGuard/OpenVPN/Cisco по имени и описанию.
+    ///
+    /// Изменения vs старой версии:
+    /// - Тип Tunnel больше НЕ является достаточным признаком: Microsoft Teredo Tunneling
+    ///   Adapter имеет тип Tunnel но VPN не является — давал false positive на чистом Wi-Fi.
+    ///   Теперь Tunnel + фильтр по имени/описанию.
+    /// - "tun" по substring заменён на точные паттерны с границами слова / позицией,
+    ///   чтобы не ловить "fortune", "Saturn", "intuned" и т.п.
+    /// - Исключаем Teredo, 6to4, Bluetooth PAN, Loopback, VMware/VirtualBox/Hyper-V
+    ///   которые всегда присутствуют на Windows и к VPN не относятся.
     /// </summary>
     private static bool DetectVpnInterface()
     {
@@ -1740,31 +1748,116 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
         {
             foreach (var iface in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
             {
-                if (iface.OperationalStatus !=
-                    System.Net.NetworkInformation.OperationalStatus.Up)
+                if (iface.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up)
                     continue;
 
-                if (iface.NetworkInterfaceType ==
-                    System.Net.NetworkInformation.NetworkInterfaceType.Tunnel)
-                    return true;
+                var name = iface.Name;
+                var desc = iface.Description;
+                var nameLow = name.ToLowerInvariant();
+                var descLow = desc.ToLowerInvariant();
 
-                var name = iface.Name.ToLowerInvariant();
-                var desc = iface.Description.ToLowerInvariant();
+                // --- Исключаем заведомо не-VPN адаптеры ---
+                // Loopback
+                if (iface.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+                    continue;
 
-                if (name.Contains("vpn") || desc.Contains("vpn") ||
-                    name.Contains("tap") || desc.Contains("tap") ||
-                    name.Contains("tun") || desc.Contains("tun") ||
-                    name.Contains("wg") || desc.Contains("wireguard") ||
-                    desc.Contains("openvpn") || desc.Contains("cisco") ||
-                    desc.Contains("nordvpn") || desc.Contains("expressvpn"))
+                // Microsoft Teredo / 6to4 — IPv6 tunnel, не VPN
+                if (descLow.Contains("teredo") || descLow.Contains("6to4") || nameLow.Contains("teredo"))
+                    continue;
+
+                // VMware / VirtualBox / Hyper-V — виртуальные адаптеры
+                if (descLow.Contains("vmware") || descLow.Contains("virtualbox") ||
+                    descLow.Contains("hyper-v") || descLow.Contains("hyperv"))
+                    continue;
+
+                // Bluetooth PAN
+                if (descLow.Contains("bluetooth") || descLow.Contains("personal area network"))
+                    continue;
+
+                // Wi-Fi Direct / Hosted Network — виртуальные Wi-Fi адаптеры Windows
+                if (descLow.Contains("wi-fi direct") || descLow.Contains("microsoft hosted"))
+                    continue;
+
+                // --- Детектируем реальные VPN ---
+
+                // Тип Tunnel ТОЛЬКО если это не Teredo/6to4 (уже отфильтровано выше)
+                if (iface.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Tunnel)
+                {
+                    Log.Debug($"[Settings] VPN detected by type=Tunnel: {name} / {desc}");
                     return true;
+                }
+
+                // Точное слово "vpn" в имени или описании
+                if (ContainsWord(nameLow, "vpn") || ContainsWord(descLow, "vpn"))
+                {
+                    Log.Debug($"[Settings] VPN detected by keyword 'vpn': {name} / {desc}");
+                    return true;
+                }
+
+                // TAP-адаптер (OpenVPN/WireGuard legacy)
+                if (ContainsWord(descLow, "tap") || nameLow.StartsWith("tap", StringComparison.Ordinal))
+                {
+                    Log.Debug($"[Settings] VPN detected by keyword 'tap': {name} / {desc}");
+                    return true;
+                }
+
+                // TUN — только если слово целиком (не substring): "tun0", "utun3"
+                // Паттерн: начинается с "tun" или "utun" + цифра
+                if (System.Text.RegularExpressions.Regex.IsMatch(nameLow, @"^u?tun\d*$"))
+                {
+                    Log.Debug($"[Settings] VPN detected by tun interface name: {name} / {desc}");
+                    return true;
+                }
+
+                // WireGuard
+                if (descLow.Contains("wireguard") || nameLow.Contains("wireguard"))
+                {
+                    Log.Debug($"[Settings] VPN detected by keyword 'wireguard': {name} / {desc}");
+                    return true;
+                }
+
+                // Известные VPN-клиенты по описанию
+                if (descLow.Contains("openvpn") || descLow.Contains("cisco") ||
+                    descLow.Contains("nordvpn") || descLow.Contains("expressvpn") ||
+                    descLow.Contains("xray") || descLow.Contains("sing-box") ||
+                    descLow.Contains("shadowsocks"))
+                {
+                    Log.Debug($"[Settings] VPN detected by vendor keyword: {name} / {desc}");
+                    return true;
+                }
+
+                // Xray TUN и аналоги обычно регистрируются как адаптер с именем "wintun"
+                if (descLow.Contains("wintun"))
+                {
+                    Log.Debug($"[Settings] VPN detected by 'wintun' driver: {name} / {desc}");
+                    return true;
+                }
             }
         }
         catch (Exception ex)
         {
-            Log.Debug($"[Settings] Ошибка детектирования VPN: {ex.Message}");
+            Log.Debug($"[Settings] VPN detection error: {ex.Message}");
         }
 
+        return false;
+    }
+
+    /// <summary>
+    /// Проверяет наличие слова в строке с учётом границ слова.
+    /// "vpn" найдёт в "nordvpn", "vpn-client", "myvpn", но не в "évènement".
+    /// Простая реализация без Regex для hot path.
+    /// </summary>
+    private static bool ContainsWord(string haystack, string word)
+    {
+        int idx = 0;
+        while ((idx = haystack.IndexOf(word, idx, StringComparison.Ordinal)) >= 0)
+        {
+            bool beforeOk = idx == 0 || !char.IsLetterOrDigit(haystack[idx - 1]);
+            bool afterOk = idx + word.Length >= haystack.Length ||
+                           !char.IsLetterOrDigit(haystack[idx + word.Length]);
+            if (beforeOk || afterOk) return true; // достаточно одной границы
+            idx += word.Length;
+        }
         return false;
     }
 

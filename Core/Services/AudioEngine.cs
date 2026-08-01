@@ -337,6 +337,7 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
 
         SubscribeToPlayerEvents();
         _youtube.OnNTokenDecryptionStarted += HandleNTokenDecryptionStarted;
+        CdnConnectionPreWarmer.OnTunnelDeadDetected += HandleCdnTunnelDead;
         InitializeFromSettings();
 
         _commandQueue = Channel.CreateBounded<IEngineCommand>(
@@ -1782,6 +1783,16 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     #region Error Handling
 
     /// <summary>
+    /// Проактивный триггер rebuild: PreWarmer обнаружил N последовательных таймаутов CDN.
+    /// Срабатывает до starvation — до того как буфер декодера исчерпается.
+    /// </summary>
+    private void HandleCdnTunnelDead()
+    {
+        Log.Warn("[AudioEngine] CdnPreWarmer: tunnel dead detected — triggering proactive rebuild");
+        NotifyNetworkStarvation();
+    }
+
+    /// <summary>
     /// Обрабатывает инвалидацию кэша: при сбое чтения выполняет 
     /// бесшовное переключение на стриминг, который хирургически пропатчит повреждённый чанк на диске.
     /// </summary>
@@ -1929,7 +1940,6 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     /// <summary>
     /// Возвращает IP исходящего интерфейса через routing table ОС.
     /// UDP Connect() не отправляет пакетов — только резолвит маршрут.
-    /// 198.18.x.x — признак активного VPN-адаптера (RFC 2544).
     /// </summary>
     private static string? GetOutboundIp()
     {
@@ -1941,13 +1951,54 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
                 System.Net.Sockets.ProtocolType.Udp);
 
             socket.Connect("8.8.8.8", 65530);
-            return (socket.LocalEndPoint as System.Net.IPEndPoint)?.Address.ToString();
+            var ip = (socket.LocalEndPoint as System.Net.IPEndPoint)?.Address.ToString();
+
+            Log.Debug($"[AudioEngine] GetOutboundIp: {ip ?? "(none)"}" +
+                      (ip != null && IsVpnTunAddress(ip) ? " [TUN/VPN static — diff bypass]" : ""));
+
+            return ip;
         }
         catch (Exception ex)
         {
             Log.Debug($"[AudioEngine] GetOutboundIp failed: {ex.Message}");
             return null;
         }
+    }
+
+    /// <summary>
+    /// Определяет, является ли IP-адрес статическим адресом TUN-адаптера VPN.
+    ///
+    /// Такие адреса никогда не меняются даже при переподключении туннеля,
+    /// поэтому diff-фильтр (currentIp == lastIp) для них бессмысленен —
+    /// rebuild нужно выполнять безусловно при NetworkAddressChanged.
+    ///
+    /// Диапазоны:
+    ///   198.18.0.0/15   — RFC 2544 (Benchmarking), стандартный TUN у Xray/sing-box
+    ///   198.51.100.0/24 — RFC 5737 TEST-NET-2
+    ///   203.0.113.0/24  — RFC 5737 TEST-NET-3
+    ///   100.64.0.0/10   — RFC 6598 Shared Address Space (некоторые WireGuard/Tailscale)
+    /// </summary>
+    private static bool IsVpnTunAddress(string ip)
+    {
+        if (!System.Net.IPAddress.TryParse(ip, out var addr))
+            return false;
+
+        var bytes = addr.GetAddressBytes();
+        if (bytes.Length != 4) return false;
+
+        // 198.18.0.0/15: bytes[0]==198, bytes[1] in [18,19]
+        if (bytes[0] == 198 && bytes[1] is 18 or 19) return true;
+
+        // 198.51.100.0/24
+        if (bytes[0] == 198 && bytes[1] == 51 && bytes[2] == 100) return true;
+
+        // 203.0.113.0/24
+        if (bytes[0] == 203 && bytes[1] == 0 && bytes[2] == 113) return true;
+
+        // 100.64.0.0/10: bytes[0]==100, bytes[1] in [64..127]
+        if (bytes[0] == 100 && bytes[1] is >= 64 and <= 127) return true;
+
+        return false;
     }
 
     /// <summary>
@@ -1988,15 +2039,30 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
                 return;
             }
 
-            if (string.Equals(currentIp, _lastOutboundIp, StringComparison.Ordinal))
+            // При статическом TUN-адресе VPN diff всегда даёт false negative:
+            // IP не меняется даже когда туннель умер и переподключился.
+            // В этом случае bypass diff-фильтр и rebuild безусловно.
+            bool isTunAddress = IsVpnTunAddress(currentIp);
+
+            if (!isTunAddress &&
+                string.Equals(currentIp, _lastOutboundIp, StringComparison.Ordinal))
             {
                 Log.Debug($"[AudioEngine] Network change ignored — outbound IP unchanged ({currentIp})");
                 return;
             }
 
-            Log.Info($"[AudioEngine] Outbound IP changed: {_lastOutboundIp ?? "(none)"} → {currentIp}. Rebuilding.");
-            _lastOutboundIp = currentIp;
+            if (isTunAddress)
+            {
+                Log.Info($"[AudioEngine] TUN/VPN address detected ({currentIp}) — " +
+                         "diff bypass, rebuilding unconditionally.");
+            }
+            else
+            {
+                Log.Info($"[AudioEngine] Outbound IP changed: " +
+                         $"{_lastOutboundIp ?? "(none)"} → {currentIp}. Rebuilding.");
+            }
 
+            _lastOutboundIp = currentIp;
             await RebuildNetworkCoreAsync().ConfigureAwait(false);
         }
         catch (OperationCanceledException) { }
@@ -2311,6 +2377,7 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
             _disposed = true;
 
             _youtube.OnNTokenDecryptionStarted -= HandleNTokenDecryptionStarted;
+            CdnConnectionPreWarmer.OnTunnelDeadDetected -= HandleCdnTunnelDead;
             lock (_sessionLock) { _sessionCts?.Cancel(); _sessionCts?.Dispose(); }
 
             try
@@ -2361,6 +2428,7 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
 
         // 1. Отписка + отмена active CTS
         _youtube.OnNTokenDecryptionStarted -= HandleNTokenDecryptionStarted;
+        CdnConnectionPreWarmer.OnTunnelDeadDetected -= HandleCdnTunnelDead;
         lock (_sessionLock) { _sessionCts?.Cancel(); _sessionCts?.Dispose(); }
 
         // 2. Синхронное сохранение настроек (in-memory словарь, sub-μs)
