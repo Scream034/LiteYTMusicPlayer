@@ -92,10 +92,19 @@ public sealed partial class CachingStreamSource
                                 .ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) { break; }
-                        catch (ChunkDownloadFatalException)
+                        catch (ChunkDownloadFatalException ex)
                         {
-                            Log.Debug("[CachingSource] Critical suspended preload fatal");
-                            break;
+                            if (ex.Reason is ChunkDownloadFailureReason.UmpFormat
+                                          or ChunkDownloadFailureReason.Forbidden403)
+                            {
+                                Log.Warn($"[CachingSource] Permanent preload fatal in suspend: {ex.Reason}");
+                                break;
+                            }
+
+                            Log.Debug($"[CachingSource] Transient preload fatal in suspend, " +
+                                      $"backing off: {ex.Message}");
+                            try { await Task.Delay(3000, ct).ConfigureAwait(false); }
+                            catch (OperationCanceledException) { break; }
                         }
                         catch (Exception ex)
                         {

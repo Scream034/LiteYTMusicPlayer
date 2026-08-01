@@ -46,7 +46,7 @@ public sealed partial class CachingStreamSource : IAudioSource
     private const int ReadAtEpochRetryDelayMs = 30;
 
     /// <summary>Количество последовательных 403 refresh-failures перед открытием breaker.</summary>
-    private const int MaxRefreshFailuresBeforeCircuitBreak = 2;
+    private const int MaxRefreshFailuresBeforeCircuitBreak = 5;
 
     /// <summary>Минимальная граница seek clamp.</summary>
     private const long SeekLowerBound = 0;
@@ -68,6 +68,15 @@ public sealed partial class CachingStreamSource : IAudioSource
 
     /// <summary>Аварийный порог буфера (мс). Ниже — максимально агрессивная загрузка.</summary>
     private const int EmergencyRefillBufferMs = 1500;
+
+    /// <summary>Порог consecutive network failures для публикации stall event.</summary>
+    private const int NetworkStallThreshold = 5;
+
+    /// <summary>Базовая задержка network retry в ReadAtAsync (мс).</summary>
+    private const int NetworkRetryBaseMs = 500;
+
+    /// <summary>Потолок задержки network retry в ReadAtAsync (мс).</summary>
+    private const int NetworkRetryMaxBackoffMs = 5000;
 
     #endregion
 
@@ -114,7 +123,14 @@ public sealed partial class CachingStreamSource : IAudioSource
     private int _requestAlignmentBytes;
 
     //  Dependencies 
-    private readonly HttpClient _httpClient;
+
+    /// <summary>
+    /// HTTP-клиент берётся из SharedHttpClient.Instance при каждом запросе,
+    /// чтобы автоматически использовать пересобранный клиент после Rebuild().
+    /// Захват ссылки в конструкторе приводил бы к использованию disposed клиента.
+    /// </summary>
+    private static HttpClient CurrentHttpClient => Audio.Http.SharedHttpClient.Instance;
+
     private readonly AudioCacheManager _cacheManager;
 
     /// <summary>
@@ -308,6 +324,17 @@ public sealed partial class CachingStreamSource : IAudioSource
     /// </summary>
     public static event Action<string, Exception>? OnSourceWarning;
 
+    /// <summary>
+    /// Источник данных обнаружил устойчивую потерю сети и ожидает восстановления.
+    /// Декодер заблокирован, PCM-буфер истощается.
+    /// </summary>
+    public static event Action<string>? OnNetworkStalled;
+
+    /// <summary>
+    /// Сеть восстановлена после stall — данные снова поступают.
+    /// </summary>
+    public static event Action<string>? OnNetworkRecovered;
+
     #endregion
 
     #region Constructor
@@ -334,7 +361,6 @@ public sealed partial class CachingStreamSource : IAudioSource
         AudioFormat format,
         AudioCodec codec,
         int bitrate,
-        HttpClient httpClient,
         AudioCacheManager cacheManager,
         StreamingConfig config,
         Func<CancellationToken, Task<string?>>? urlAcquirer = null,
@@ -347,7 +373,6 @@ public sealed partial class CachingStreamSource : IAudioSource
         _contentLength = contentLength;
         _format = format;
         _bitrate = bitrate;
-        _httpClient = httpClient;
         _cacheManager = cacheManager;
         _urlAcquirer = urlAcquirer;
         _urlRefresher = urlRefresher;

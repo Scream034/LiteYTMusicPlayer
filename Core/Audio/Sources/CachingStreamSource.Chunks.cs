@@ -571,10 +571,15 @@ public sealed partial class CachingStreamSource
 
         if (_ramCache.TryRead(position, buffer, out int ramRead)) return ramRead;
 
-        int diskRead = await TryLoadRangeFromDiskAsync(position, requiredLength, buffer, ct).ConfigureAwait(false);
+        int diskRead = await TryLoadRangeFromDiskAsync(position, requiredLength, buffer, ct)
+            .ConfigureAwait(false);
         if (diskRead > 0) return diskRead;
 
-        for (int attempt = 0; attempt < ReadAtMaxEpochRetries; attempt++)
+        int epochRetries = 0;
+        int consecutiveNetworkFailures = 0;
+        bool networkStallPublished = false;
+
+        while (true)
         {
             ct.ThrowIfCancellationRequested();
 
@@ -586,12 +591,72 @@ public sealed partial class CachingStreamSource
                 var result = await EnsureRangeAsync(position, requiredLength, linkedCts.Token, isCritical: true)
                     .ConfigureAwait(false);
 
-                if (result == RangeDownloadResult.OutOfRange) return 0;
+                switch (result)
+                {
+                    case RangeDownloadResult.OutOfRange:
+                        return 0;
 
-                if (_ramCache.TryRead(position, buffer, out ramRead)) return ramRead;
+                    case RangeDownloadResult.Success:
+                        {
+                            if (networkStallPublished)
+                            {
+                                networkStallPublished = false;
+                                consecutiveNetworkFailures = 0;
+                                PublishNetworkRecovered();
+                            }
 
-                diskRead = await TryLoadRangeFromDiskAsync(position, requiredLength, buffer, ct).ConfigureAwait(false);
-                if (diskRead > 0) return diskRead;
+                            if (_ramCache.TryRead(position, buffer, out ramRead)) return ramRead;
+
+                            diskRead = await TryLoadRangeFromDiskAsync(position, requiredLength, buffer, ct)
+                                .ConfigureAwait(false);
+                            if (diskRead > 0) return diskRead;
+
+                            consecutiveNetworkFailures++;
+                            await Task.Delay(NetworkRetryBaseMs, ct).ConfigureAwait(false);
+                            continue;
+                        }
+
+                    case RangeDownloadResult.NetworkError:
+                    case RangeDownloadResult.SlotTimeout:
+                        {
+                            consecutiveNetworkFailures++;
+                            CheckAndPublishNetworkStall(
+                                ref networkStallPublished, consecutiveNetworkFailures, position);
+
+                            int backoffMs = ComputeNetworkRetryBackoff(consecutiveNetworkFailures);
+                            await Task.Delay(backoffMs, ct).ConfigureAwait(false);
+                            continue;
+                        }
+
+                    case RangeDownloadResult.Cancelled:
+                        ct.ThrowIfCancellationRequested();
+                        if (downloadToken.IsCancellationRequested)
+                        {
+                            // Epoch сменился (seek, URL refresh, rebuild) — конечный retry.
+                            epochRetries++;
+                            if (epochRetries >= ReadAtMaxEpochRetries)
+                                throw CreateReadAtFatalException(position);
+                            await Task.Delay(ReadAtEpochRetryDelayMs, ct).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            // Отмена без смены epoch — ObjectDisposed от Rebuild.
+                            // Трактуем как transient сетевую ошибку.
+                            consecutiveNetworkFailures++;
+                            CheckAndPublishNetworkStall(
+                                ref networkStallPublished, consecutiveNetworkFailures, position);
+                            await Task.Delay(
+                                ComputeNetworkRetryBackoff(consecutiveNetworkFailures), ct)
+                                .ConfigureAwait(false);
+                        }
+                        continue;
+
+                    default:
+                        consecutiveNetworkFailures++;
+                        await Task.Delay(ComputeNetworkRetryBackoff(consecutiveNetworkFailures), ct)
+                            .ConfigureAwait(false);
+                        continue;
+                }
             }
             catch (ChunkDownloadFatalException)
             {
@@ -599,13 +664,19 @@ public sealed partial class CachingStreamSource
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                Log.Debug($"[CachingSource] ReadAt at {position}: epoch changed, retry {attempt + 1}/{ReadAtMaxEpochRetries}");
+                epochRetries++;
+                if (epochRetries >= ReadAtMaxEpochRetries)
+                {
+                    Log.Warn($"[CachingSource] ReadAt {position}: epoch retries exhausted " +
+                             $"({ReadAtMaxEpochRetries})");
+                    throw CreateReadAtFatalException(position);
+                }
+
+                Log.Debug($"[CachingSource] ReadAt at {position}: epoch changed, " +
+                          $"retry {epochRetries}/{ReadAtMaxEpochRetries}");
                 await Task.Delay(ReadAtEpochRetryDelayMs, ct).ConfigureAwait(false);
             }
         }
-
-        ct.ThrowIfCancellationRequested();
-        throw CreateReadAtFatalException(position);
     }
 
     private async Task<int> TryLoadRangeFromDiskAsync(long position, int minimumLength, Memory<byte> target, CancellationToken ct)
@@ -793,119 +864,101 @@ public sealed partial class CachingStreamSource
 
                 // 403 Forbidden
                 case RangeDownloadResult.Forbidden403:
-                {
-                    // Сообщаем наружу (через PlaybackErrorOrchestrator) о проблеме
-                    // ровно один раз — чтобы UI мог показать индикатор или запустить recovery.
-                    if (isCritical && !warningPublished)
                     {
-                        warningPublished = true;
-                        PublishSourceWarning(
-                            new UnauthorizedAccessException(
-                                $"Critical range {plan.Start}-{plan.Start + plan.Length - 1L} " +
-                                $"received HTTP 403 and requires stream URL refresh"));
-                    }
+                        // Сообщаем наружу (через PlaybackErrorOrchestrator) о проблеме
+                        // ровно один раз — чтобы UI мог показать индикатор или запустить recovery.
+                        if (isCritical && !warningPublished)
+                        {
+                            warningPublished = true;
+                            PublishSourceWarning(
+                                new UnauthorizedAccessException(
+                                    $"Critical range {plan.Start}-{plan.Start + plan.Length - 1L} " +
+                                    $"received HTTP 403 and requires stream URL refresh"));
+                        }
 
-                    // При 403 отменяем ВСЕ параллельные preload-запросы:
-                    // они используют тот же мёртвый URL и тоже получат 403.
-                    // Гарантирует что после получения нового URL не будет race
-                    // между старыми in-flight запросами и новыми.
-                    ResetDownloadEpoch();
-
-                    Log.Warn($"[CachingSource] [{_trackId}] HTTP 403 on range {plan.Start}-{plan.Start + plan.Length - 1L}. " +
-                            $"Attempt {attempt + 1}/{maxAttempts}. Refreshing URL...");
-
-                    UrlRefreshOutcome outcome;
-                    try
-                    {
-                        outcome = await CoordinatedRefreshAsync(ct).ConfigureAwait(false);
-                    }
-                    catch (ChunkDownloadFatalException)
-                    {
-                        // Circuit breaker открылся — пробрасываем fatal наверх.
-                        throw;
-                    }
-
-                    switch (outcome)
-                    {
-                        case UrlRefreshOutcome.Success:
-                            // URL реально обновился — продолжаем retry.
-                            consecutiveStaleRefreshes = 0;
-                            Log.Info($"[CachingSource] [{_trackId}] URL refreshed, retrying range {plan.Start}");
-                            continue;
-
-                        case UrlRefreshOutcome.StaleToken:
-                            // URL изменился, но n-token тот же — скорее всего session cache
-                            // вернул старый manifest. Следующий retry скорее всего снова 403.
-                            // Даём небольшую задержку перед следующей попыткой.
-                            consecutiveStaleRefreshes++;
-                            Log.Warn($"[CachingSource] [{_trackId}] Stale n-token after refresh " +
-                                    $"({consecutiveStaleRefreshes}/{MaxStaleRefreshesBeforeGivingUp}). " +
-                                    $"Backing off before retry...");
-
-                            if (consecutiveStaleRefreshes >= MaxStaleRefreshesBeforeGivingUp)
-                            {
-                                // Слишком много refresh с одинаковым token — сдаёмся.
-                                Log.Error($"[CachingSource] [{_trackId}] Too many stale refreshes. " +
-                                        $"Escalating to fatal.");
-                                throw CreateReadAtFatalException(position);
-                            }
-
-                            // Exponential backoff: 1s, 2s, 4s
-                            int backoffMs = (int)Math.Pow(2, consecutiveStaleRefreshes - 1) * 1000;
-                            await Task.Delay(backoffMs, ct).ConfigureAwait(false);
-                            continue;
-
-                        case UrlRefreshOutcome.NoChange:
-                            // Refresher не вернул новый URL — API недоступен или session expired.
-                            // Нет смысла немедленно ретраить — ждём подольше.
-                            consecutiveStaleRefreshes++;
-                            Log.Warn($"[CachingSource] [{_trackId}] Refresh returned no new URL. " +
-                                    $"Waiting before retry ({attempt + 1}/{maxAttempts})...");
-
-                            // Увеличенный backoff при полном отсутствии URL: 2s, 4s, 8s
-                            int noUrlBackoffMs = (int)Math.Pow(2, consecutiveStaleRefreshes) * 1000;
-                            await Task.Delay(Math.Min(noUrlBackoffMs, 8000), ct).ConfigureAwait(false);
-                            continue;
-
-                        default:
-                            continue;
-                    }
-                }
-
-                // Network Error
-                case RangeDownloadResult.NetworkError:
-                {
-                    chunkIoExceptions++;
-
-                    if (isCritical && !warningPublished && chunkIoExceptions >= 2)
-                    {
-                        warningPublished = true;
-                        PublishSourceWarning(
-                            new IOException(
-                                $"Critical range {plan.Start}-{plan.Start + plan.Length - 1L} " +
-                                $"failed repeatedly and playback may stall"));
-                    }
-
-                    // После двух сетевых ошибок подряд — URL мог протухнуть или CDN умер.
-                    // Пробуем сменить URL и сбросить epoch как при 403.
-                    if (chunkIoExceptions >= 2)
-                    {
-                        Log.Warn($"[CachingSource] [{_trackId}] Repeated network errors " +
-                                $"({chunkIoExceptions}). Forcing URL refresh and epoch reset...");
-
+                        // При 403 отменяем ВСЕ параллельные preload-запросы:
+                        // они используют тот же мёртвый URL и тоже получат 403.
+                        // Гарантирует что после получения нового URL не будет race
+                        // между старыми in-flight запросами и новыми.
                         ResetDownloadEpoch();
+
+                        Log.Warn($"[CachingSource] [{_trackId}] HTTP 403 on range {plan.Start}-{plan.Start + plan.Length - 1L}. " +
+                                $"Attempt {attempt + 1}/{maxAttempts}. Refreshing URL...");
+
+                        UrlRefreshOutcome outcome;
                         try
                         {
-                            await CoordinatedRefreshAsync(ct).ConfigureAwait(false);
+                            outcome = await CoordinatedRefreshAsync(ct).ConfigureAwait(false);
                         }
-                        catch (ChunkDownloadFatalException) { throw; }
+                        catch (ChunkDownloadFatalException)
+                        {
+                            // Circuit breaker открылся — пробрасываем fatal наверх.
+                            throw;
+                        }
+
+                        switch (outcome)
+                        {
+                            case UrlRefreshOutcome.Success:
+                                // URL реально обновился — продолжаем retry.
+                                consecutiveStaleRefreshes = 0;
+                                Log.Info($"[CachingSource] [{_trackId}] URL refreshed, retrying range {plan.Start}");
+                                continue;
+
+                            case UrlRefreshOutcome.StaleToken:
+                                // URL изменился, но n-token тот же — скорее всего session cache
+                                // вернул старый manifest. Следующий retry скорее всего снова 403.
+                                // Даём небольшую задержку перед следующей попыткой.
+                                consecutiveStaleRefreshes++;
+                                Log.Warn($"[CachingSource] [{_trackId}] Stale n-token after refresh " +
+                                        $"({consecutiveStaleRefreshes}/{MaxStaleRefreshesBeforeGivingUp}). " +
+                                        $"Backing off before retry...");
+
+                                if (consecutiveStaleRefreshes >= MaxStaleRefreshesBeforeGivingUp)
+                                {
+                                    // Слишком много refresh с одинаковым token — сдаёмся.
+                                    Log.Error($"[CachingSource] [{_trackId}] Too many stale refreshes. " +
+                                            $"Escalating to fatal.");
+                                    throw CreateReadAtFatalException(position);
+                                }
+
+                                // Exponential backoff: 1s, 2s, 4s
+                                int backoffMs = (int)Math.Pow(2, consecutiveStaleRefreshes - 1) * 1000;
+                                await Task.Delay(backoffMs, ct).ConfigureAwait(false);
+                                continue;
+
+                            case UrlRefreshOutcome.NoChange:
+                                // Refresh не вернул URL — API недоступен или timeout.
+                                // Это transient: не инкрементим consecutiveStaleRefreshes,
+                                // не открываем circuit breaker. Просто backoff и retry.
+                                Log.Warn($"[CachingSource] [{_trackId}] Refresh returned no new URL. " +
+                                        $"Backing off before retry ({attempt + 1}/{maxAttempts})...");
+                                int noUrlBackoffMs = Math.Min((attempt + 1) * 2000, 8000);
+                                await Task.Delay(noUrlBackoffMs, ct).ConfigureAwait(false);
+                                continue;
+
+                            default:
+                                continue;
+                        }
                     }
 
-                    // Quadratic backoff: 100ms, 400ms, 900ms, 1600ms, 2000ms (cap)
-                    int delay = (int)Math.Min(2000, 100 * Math.Pow(attempt + 1, 2));
-                    await Task.Delay(delay, ct).ConfigureAwait(false);
-                    continue;
-                }
+                case RangeDownloadResult.NetworkError:
+                    {
+                        chunkIoExceptions++;
+
+                        if (isCritical && !warningPublished && chunkIoExceptions >= 2)
+                        {
+                            warningPublished = true;
+                            PublishSourceWarning(
+                                new IOException(
+                                    $"Critical range {plan.Start}-{plan.Start + plan.Length - 1L} " +
+                                    $"failed repeatedly and playback may stall"));
+                        }
+
+                        // Quadratic backoff: 100ms, 400ms, 900ms, 1600ms, 2000ms (cap)
+                        int delay = (int)Math.Min(2000, 100 * Math.Pow(attempt + 1, 2));
+                        await Task.Delay(delay, ct).ConfigureAwait(false);
+                        continue;
+                    }
 
                 case RangeDownloadResult.Cancelled:
                     ct.ThrowIfCancellationRequested();
@@ -1066,7 +1119,12 @@ public sealed partial class CachingStreamSource
             return await DownloadRangeHttpAsync(plan, ct).ConfigureAwait(false);
         }
         catch (ChunkDownloadFatalException) { throw; }
-        catch (ObjectDisposedException) { return RangeDownloadResult.Cancelled; }
+        // Source уничтожен или epoch отменён — настоящая отмена.
+        catch (ObjectDisposedException) when (_disposed || ct.IsCancellationRequested)
+        { return RangeDownloadResult.Cancelled; }
+        // HttpClient пересобран (Rebuild) — transient, не отмена.
+        catch (ObjectDisposedException)
+        { return RangeDownloadResult.NetworkError; }
         catch (OperationCanceledException) { return RangeDownloadResult.Cancelled; }
         catch (Exception) when (ct.IsCancellationRequested || _disposed) { return RangeDownloadResult.Cancelled; }
         catch (Exception ex)
@@ -1109,7 +1167,7 @@ public sealed partial class CachingStreamSource
 
         try
         {
-            response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            response = await CurrentHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
             sw.Stop();
             if (response.IsSuccessStatusCode) SaveLatency(sw.Elapsed.TotalMilliseconds);
         }
@@ -1506,9 +1564,12 @@ public sealed partial class CachingStreamSource
 
         if (!urlActuallyChanged)
         {
-            int failures = Interlocked.Increment(ref _consecutiveRefreshFailures);
+            // НЕ инкрементим _consecutiveRefreshFailures.
+            // NoChange = refresh не вернул URL (timeout, network error, API unavailable).
+            // Это transient — не повод для circuit break.
+            // Circuit breaker считает только StaleToken (URL получен, но n-token тот же).
             Log.Warn($"[CachingSource] [{_trackId}] Refresh returned no new URL " +
-                    $"(failure {failures}/{MaxRefreshFailuresBeforeCircuitBreak})");
+                    $"(transient, circuit breaker not incremented)");
             return UrlRefreshOutcome.NoChange;
         }
 
@@ -1585,6 +1646,44 @@ public sealed partial class CachingStreamSource
     #endregion
 
     #region Helpers
+
+    /// <summary>
+    /// Capped exponential backoff для transient network retry.
+    /// Прогрессия: 500мс → 1с → 2с → 4с → 5с (потолок).
+    /// </summary>
+    private static int ComputeNetworkRetryBackoff(int consecutiveFailures)
+    {
+        int exponent = Math.Min(consecutiveFailures - 1, 3);
+        int backoffMs = NetworkRetryBaseMs * (1 << Math.Max(0, exponent));
+        return Math.Min(backoffMs, NetworkRetryMaxBackoffMs);
+    }
+
+    /// <summary>
+    /// Однократная публикация network stall event при достижении порога.
+    /// </summary>
+    private void CheckAndPublishNetworkStall(
+        ref bool published, int consecutiveFailures, long position)
+    {
+        if (published || consecutiveFailures < NetworkStallThreshold) return;
+
+        published = true;
+        Log.Warn($"[CachingSource] [{_trackId}] Network stall at position {position} " +
+                 $"after {consecutiveFailures} consecutive failures. " +
+                 "Waiting for recovery (infinite retry)...");
+
+        try { OnNetworkStalled?.Invoke(_trackId); }
+        catch (Exception ex) { Log.Warn($"[CachingSource] NetworkStalled handler: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Публикация восстановления сети после stall.
+    /// </summary>
+    private void PublishNetworkRecovered()
+    {
+        Log.Info($"[CachingSource] [{_trackId}] Network recovered — data flow restored");
+        try { OnNetworkRecovered?.Invoke(_trackId); }
+        catch (Exception ex) { Log.Warn($"[CachingSource] NetworkRecovered handler: {ex.Message}"); }
+    }
 
     /// <summary>
     /// Проверяет, покрыт ли диапазон полностью уже локально либо активной in-flight загрузкой.
