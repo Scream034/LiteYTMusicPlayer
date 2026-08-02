@@ -666,7 +666,7 @@ public sealed partial class AudioPlayer
         if (pipeline.Source is CachingStreamSource css)
             return css.IsSeekDataReady(positionMs);
 
-        if (pipeline.Source is Sources.LocalFileSource)
+        if (pipeline.Source is LocalFileSource)
             return true;
 
         return false;

@@ -88,4 +88,16 @@ public static class ManualTests
     /// <summary>Только шаг 3 — QuickJS Snapshot (самый важный, выявляет async issues).</summary>
     public static Task TestPoTokenSnapshotAsync() =>
         Integration.PoTokenTests.TestQuickJsSnapshotAsync();
+
+    /// <summary>Диагностика CDN: TCP, path discrimination, zapret coverage.</summary>
+    public static Task DiagnoseCdnAsync() =>
+        Integration.CdnDiagnosticTests.TestLiveFullChainAsync(AppEntry.Services);
+
+    /// <summary>Проверка конфигурации zapret без сети.</summary>
+    public static Task AuditZapretConfigAsync() =>
+        Integration.CdnDiagnosticTests.TestZapretConfigAuditAsync(AppEntry.Services);
+
+    /// <summary>Тест проблемного CDN узла 74.125.104.73.</summary>
+    public static Task TestProblemCdnAsync() =>
+        Integration.CdnDiagnosticTests.TestProblemIpDirectAsync(AppEntry.Services);
 }

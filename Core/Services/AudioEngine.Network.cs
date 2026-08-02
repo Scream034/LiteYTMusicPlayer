@@ -44,17 +44,16 @@ public sealed partial class AudioEngine
                 return;
             }
 
-            bool isTunAddress = IsVpnTunAddress(currentIp);
-
-            if (!isTunAddress &&
-                string.Equals(currentIp, _lastOutboundIp, StringComparison.Ordinal))
+            if (string.Equals(currentIp, _lastOutboundIp, StringComparison.Ordinal))
             {
                 Log.Debug($"[AudioEngine] Network change ignored — outbound IP unchanged ({currentIp})");
                 return;
             }
 
+            bool isTunAddress = IsVpnTunAddress(currentIp);
+
             if (isTunAddress)
-                Log.Info($"[AudioEngine] TUN/VPN address detected ({currentIp}) — diff bypass, rebuilding unconditionally.");
+                Log.Info($"[AudioEngine] TUN/VPN address changed: {_lastOutboundIp ?? "(none)"} → {currentIp}. Rebuilding.");
             else
                 Log.Info($"[AudioEngine] Outbound IP changed: {_lastOutboundIp ?? "(none)"} → {currentIp}. Rebuilding.");
 
@@ -223,6 +222,9 @@ public sealed partial class AudioEngine
         }
     }
 
+    /// <summary>
+    /// Определяет, является ли адрес виртуальным, приватным или туннельным.
+    /// </summary>
     private static bool IsVpnTunAddress(string ip)
     {
         if (!System.Net.IPAddress.TryParse(ip, out var addr))
@@ -231,10 +233,23 @@ public sealed partial class AudioEngine
         var bytes = addr.GetAddressBytes();
         if (bytes.Length != 4) return false;
 
+        // RFC 1918 — стандартные приватные диапазоны (LAN, Radmin VPN, OpenVPN client-side)
+        if (bytes[0] == 10) return true;
+        if (bytes[0] == 172 && bytes[1] is >= 16 and <= 31) return true;
+        if (bytes[0] == 192 && bytes[1] == 168) return true;
+
+        // Loopback
+        if (bytes[0] == 127) return true;
+
+        // RFC 6598 — CGNAT / shared address space (Tailscale, WireGuard, МГТС CGNAT)
+        if (bytes[0] == 100 && bytes[1] is >= 64 and <= 127) return true;
+
+        // RFC 2544 — benchmark testing (часто назначается TUN-адаптерами)
         if (bytes[0] == 198 && bytes[1] is 18 or 19) return true;
+
+        // RFC 5737 — documentation ranges (используются sing-box tun mode)
         if (bytes[0] == 198 && bytes[1] == 51 && bytes[2] == 100) return true;
         if (bytes[0] == 203 && bytes[1] == 0 && bytes[2] == 113) return true;
-        if (bytes[0] == 100 && bytes[1] is >= 64 and <= 127) return true;
 
         return false;
     }

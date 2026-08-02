@@ -707,10 +707,27 @@ public sealed partial class CachingStreamSource
         { return RangeDownloadResult.Cancelled; }
         catch (HttpRequestException ex) when (IsCancelledSendFailure(ex, ct, _disposed))
         { return RangeDownloadResult.Cancelled; }
-        catch (TaskCanceledException)
-        { return RangeDownloadResult.NetworkError; }
-        catch (HttpRequestException)
-        { return RangeDownloadResult.NetworkError; }
+        catch (TaskCanceledException ex)
+        {
+            _lastDownloadException = ex;
+            Log.Warn($"[CachingSource] [{_trackId}] SEND timeout range {plan.Start}-{end}: " +
+                     $"{NetworkErrorHelper.DescribeTransportFailure(ex)} ({sw.ElapsedMilliseconds}ms)");
+            return RangeDownloadResult.NetworkError;
+        }
+        catch (HttpRequestException ex)
+        {
+            _lastDownloadException = ex;
+            Log.Warn($"[CachingSource] [{_trackId}] SEND failed range {plan.Start}-{end}: " +
+                     $"{NetworkErrorHelper.DescribeTransportFailure(ex)} ({sw.ElapsedMilliseconds}ms)");
+            return RangeDownloadResult.NetworkError;
+        }
+        catch (IOException ex)
+        {
+            _lastDownloadException = ex;
+            Log.Warn($"[CachingSource] [{_trackId}] SEND io range {plan.Start}-{end}: " +
+                     $"{NetworkErrorHelper.DescribeTransportFailure(ex)} ({sw.ElapsedMilliseconds}ms)");
+            return RangeDownloadResult.NetworkError;
+        }
 
         using (response)
         {

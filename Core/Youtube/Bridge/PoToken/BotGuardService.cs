@@ -999,7 +999,7 @@ public sealed class BotGuardService : IDisposable
         if (string.IsNullOrWhiteSpace(value))
             return "null";
 
-        var sb = new System.Text.StringBuilder(value.Length);
+        var sb = new StringBuilder(value.Length);
         foreach (char c in value)
         {
             sb.Append(Path.GetInvalidFileNameChars().Contains(c) ? '_' : c);
@@ -1030,7 +1030,7 @@ public sealed class BotGuardService : IDisposable
             return new string(buf[..pos]);
         }
 
-        var sb = new System.Text.StringBuilder(s.Length + 64);
+        var sb = new StringBuilder(s.Length + 64);
         Span<char> tmp = stackalloc char[6];
 
         foreach (char c in s)

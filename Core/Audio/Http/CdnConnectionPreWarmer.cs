@@ -144,7 +144,6 @@ internal static class CdnConnectionPreWarmer
                 HttpMethod.Get,
                 $"https://{host}{GenerateEndpoint}");
 
-            request.Headers.ConnectionClose = false;
             SharedHttpClient.ApplyUserAgentFromUrl(request, $"https://{host}/");
 
             using var response = await httpClient

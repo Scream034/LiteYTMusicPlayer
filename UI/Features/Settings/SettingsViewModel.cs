@@ -1680,6 +1680,8 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
 
             NetworkLatencyMs = (int)sw.ElapsedMilliseconds;
 
+            Log.Info($"[Settings] Network test: {NetworkLatencyMs}ms (proxy={ProxyEnabled}, vpn={vpnDetected}, cdnReachable={cdnReachable})");
+
             if (ProxyEnabled && !string.IsNullOrWhiteSpace(ProxyHost))
             {
                 SetNetworkStatus(

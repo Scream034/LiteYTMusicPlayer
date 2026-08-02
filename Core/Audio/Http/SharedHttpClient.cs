@@ -13,6 +13,7 @@ public static class SharedHttpClient
 {
     private static volatile HttpClient _instance = CreateClient(null);
     private static readonly Lock _rebuildLock = new();
+    private static long _connectionSequence;
 
     /// <summary>Текущий активный экземпляр клиента.</summary>
     public static HttpClient Instance => _instance;
@@ -42,53 +43,65 @@ public static class SharedHttpClient
                   $"Proxy: {(proxy?.Enabled == true ? $"{proxy.Host}:{proxy.Port}" : "none")}");
     }
 
+    /// <summary>
+    /// Создаёт новый экземпляр <see cref="HttpClient"/> для CDN-запросов аудио.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Клиент конфигурируется для работы с YouTube CDN (<c>*.googlevideo.com</c>):
+    /// <list type="bullet">
+    ///   <item>
+    ///     <description>
+    ///       <see cref="SocketsHttpHandler.ConnectCallback"/> — кастомный обработчик TCP-подключений
+    ///       с явным выбором <c>IPv4</c> при <see cref="System.Net.Sockets.AddressFamily.Unspecified"/>.
+    ///       Гарантирует прохождение трафика через инструменты обхода DPI (zapret, GoodbyeDPI),
+    ///       которые перехватывают только IPv4.
+    ///     </description>
+    ///   </item>
+    ///   <item>
+    ///     <description>
+    ///       <see cref="SocketsHttpHandler.PooledConnectionLifetime"/> = 90 секунд —
+    ///       предотвращает накопление «зомби»-соединений при смене VPN-туннеля.
+    ///     </description>
+    ///   </item>
+    ///   <item>
+    ///     <description>
+    ///       <see cref="SocketsHttpHandler.PooledConnectionIdleTimeout"/> = 45 секунд —
+    ///       даёт запас между прогревом CDN (<see cref="CdnConnectionPreWarmer"/>) и первым
+    ///       Range GET из <c>CachingStreamSource</c>.
+    ///     </description>
+    ///   </item>
+    ///   <item>
+    ///     <description>
+    ///       <see cref="SocketsHttpHandler.UseProxy"/> = <see langword="false"/> —
+    ///       явно отключает системный proxy Windows, исключая захват трафика
+    ///       отладочными инструментами (Fiddler, Charles) в нейтральных запусках.
+    ///     </description>
+    ///   </item>
+    /// </list>
+    /// </para>
+    /// <para>
+    /// TCP keepalive намеренно <b>не используется</b>: при ТСПУ silent-drop keepalive-зонды
+    /// уходят в никуда, и ОС закрывает сокет через <c>KeepaliveTime + Interval × RetryCount</c>
+    /// секунд с <c>WSAECONNRESET</c>, маскируя истинную причину отказа.
+    /// Вместо этого таймаут регулируется через <see cref="HttpClient.Timeout"/>.
+    /// </para>
+    /// </remarks>
+    /// <param name="proxy">
+    /// Пользовательские настройки HTTP-прокси. Передайте <see langword="null"/> для прямого подключения.
+    /// </param>
+    /// <returns>Новый настроенный экземпляр <see cref="HttpClient"/>.</returns>
     private static HttpClient CreateClient(ProxySettings? proxy)
     {
         var handler = new SocketsHttpHandler
         {
-            // --- LAYER 1: TCP Keepalive через ConnectCallback ---
-            // Единственный официально задокументированный способ установить SO_KEEPALIVE
-            // на уровне сокета в SocketsHttpHandler (.NET 5+).
-            // Паттерн взят из официальной документации Microsoft:
-            // https://learn.microsoft.com/en-us/dotnet/api/system.net.http.socketshttphandler.connectcallback
-            //
-            // Зачем: при работе через TUN VPN (Xray, sing-box, WireGuard) TCP-соединения
-            // могут тихо умереть когда туннель переподключается или ротирует маршрут,
-            // при этом SocketsHttpHandler не знает об этом и держит зомби-сокеты в пуле.
-            // Следующий range-запрос берёт мёртвый сокет → IOException шторм → starvation.
-            //
-            // С keepalive: ОС детектирует мёртвый туннель за 5 + 3×3 = 14с и закрывает сокет.
-            // SocketsHttpHandler при извлечении из пула видит закрытый сокет и создаёт новый
-            // автоматически — без IOException шторма и без ручного rebuild.
             ConnectCallback = ConnectWithKeepAliveAsync,
-
-            // --- LAYER 2: Ротация пула ---
-            // 90с вместо 15мин: принудительное пересоздание соединений до того
-            // как туннель успевает протухнуть. При активном VPN TUN туннели живут
-            // в среднем 60–120с при переподключении. 15мин гарантировало накопление зомби.
             PooledConnectionLifetime = TimeSpan.FromSeconds(90),
-
-            // 10с вместо 15с: idle-соединения дропаются быстрее.
-            // Keepalive покрывает активные, idle не нужны долго.
-            PooledConnectionIdleTimeout = TimeSpan.FromSeconds(10),
-
-            // 6 вместо 16: при 16 параллельных соединениях IOException шторм был
-            // максимальным (16 мёртвых сокетов одновременно). 6 достаточно для
-            // range-запросов + прогрева CDN.
+            PooledConnectionIdleTimeout = TimeSpan.FromSeconds(45),
             MaxConnectionsPerServer = 6,
-
             AutomaticDecompression = DecompressionMethods.All,
             UseCookies = false,
-
-            ResponseDrainTimeout = TimeSpan.Zero,
-
-            // KeepAlivePingPolicy работает только для HTTP/2.
-            // При HTTP/1.1 (наш случай) это no-op — убираем ложное ощущение защиты.
-            // Реальный keepalive теперь на уровне TCP через ConnectCallback выше.
-            // KeepAlivePingPolicy = HttpKeepAlivePingPolicy.WithActiveRequests, // HTTP/2 only
-
-            // 8с вместо 15с: с TCP keepalive мёртвый туннель детектируется за ~14с ОС,
-            // поэтому ConnectTimeout 15с был бесполезным ожиданием поверх.
+            ResponseDrainTimeout = TimeSpan.FromSeconds(1),
             ConnectTimeout = TimeSpan.FromSeconds(8),
         };
 
@@ -105,69 +118,119 @@ public static class SharedHttpClient
 
         Log.Debug($"[SharedHttpClient] Created: HTTP/{client.DefaultRequestVersion}, " +
                   $"policy={client.DefaultVersionPolicy}, " +
-                  $"poolLifetime=90s, maxConn=6, keepAlive=TCP(5s/3s/3)");
+                  $"poolLifetime=90s, maxConn=6, idleTimeout=45s, proxy={(proxy?.Enabled == true ? $"{proxy.Host}:{proxy.Port}" : "none")}");
 
         return client;
     }
 
     /// <summary>
-    /// ConnectCallback с TCP keepalive.
-    /// Вызывается SocketsHttpHandler при создании каждого нового соединения.
-    ///
-    /// Параметры агрессивные для TUN VPN:
-    ///   TcpKeepAliveTime     = 5с  — первый зонд через 5с idle
-    ///   TcpKeepAliveInterval = 3с  — повторные зонды каждые 3с
-    ///   TcpKeepAliveRetryCount = 3 — 3 нет ответа → ОС закрывает сокет
-    ///
-    /// Итог: мёртвый туннель детектируется за 5 + 3×3 = 14с вместо ConnectTimeout.
-    ///
-    /// DNS resolution выполняется внутри callback через Dns.GetHostAddressesAsync,
-    /// что позволяет использовать ctx.DnsEndPoint.AddressFamily для IPv4/IPv6 hint.
+    /// Callback установки TCP-соединения для <see cref="SocketsHttpHandler"/>.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Реализует два поведения, недоступных через стандартные свойства <see cref="SocketsHttpHandler"/>:
+    /// </para>
+    /// <para>
+    /// <b>1. Принудительный IPv4 при неопределённом AddressFamily.</b><br/>
+    /// При <see cref="System.Net.Sockets.AddressFamily.Unspecified"/> DNS может вернуть AAAA-записи,
+    /// и <see cref="System.Net.Sockets.Socket"/> по умолчанию создаётся как dual-stack IPv6.
+    /// Трафик по IPv6 обходит WinDivert-based инструменты обхода DPI (zapret, GoodbyeDPI),
+    /// которые перехватывают только IPv4-пакеты.
+    /// Метод фильтрует адреса до IPv4 (<see cref="System.Net.Sockets.AddressFamily.InterNetwork"/>),
+    /// сохраняя fallback на полный список при отсутствии A-записей.
+    /// </para>
+    /// <para>
+    /// <b>2. Явный <see cref="System.Net.Sockets.AddressFamily"/> в конструкторе Socket.</b><br/>
+    /// Создание <c>new Socket(SocketType.Stream, ProtocolType.Tcp)</c> без <c>AddressFamily</c>
+    /// может завершиться <see cref="System.Net.Sockets.SocketException"/>
+    /// (<c>WSAEAFNOSUPPORT</c>) при несоответствии семейства адреса и сокета.
+    /// Конструктор с явным <c>addresses[0].AddressFamily</c> исключает эту ситуацию.
+    /// </para>
+    /// <para>
+    /// TCP keepalive намеренно <b>отсутствует</b>. При ТСПУ silent-drop keepalive-зонды
+    /// уходят в никуда; ОС считает N потерянных зондов отказом сети и закрывает сокет
+    /// с <c>ConnectionReset (10054)</c>, скрывая истинную причину. Таймаут регулируется
+    /// через <see cref="HttpClient.Timeout"/> на уровне HTTP-запроса.
+    /// </para>
+    /// </remarks>
+    /// <param name="ctx">
+    /// Контекст подключения: DNS-endpoint, AddressFamily-подсказка и начальный HTTP-запрос,
+    /// инициировавший открытие нового соединения.
+    /// </param>
+    /// <param name="ct">Токен отмены.</param>
+    /// <returns>
+    /// Открытый <see cref="NetworkStream"/> поверх установленного TCP-сокета.
+    /// </returns>
+    /// <exception cref="System.Net.Sockets.SocketException">
+    /// Выбрасывается, если DNS не вернул ни одного адреса или TCP Connect завершился ошибкой.
+    /// </exception>
     internal static async ValueTask<Stream> ConnectWithKeepAliveAsync(
         SocketsHttpConnectionContext ctx,
         CancellationToken ct)
     {
-        // Резолвим DNS с учётом предпочтительного AddressFamily из контекста.
-        // Это важно: при наличии только IPv4 или только IPv6 маршрута
-        // ConnectAsync к неправильному семейству упадёт с SocketException.
-        var addresses = await Dns.GetHostAddressesAsync(
+        var allAddresses = await Dns.GetHostAddressesAsync(
             ctx.DnsEndPoint.Host,
             ctx.DnsEndPoint.AddressFamily,
             ct).ConfigureAwait(false);
 
-        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp)
+        // При AddressFamily.Unspecified DNS возвращает A и AAAA.
+        // Оставляем только IPv4: WinDivert-based bypass работает только на IPv4.
+        IPAddress[] addresses;
+        if (ctx.DnsEndPoint.AddressFamily == System.Net.Sockets.AddressFamily.Unspecified)
         {
-            // Отключаем алгоритм Нейгла: для range-запросов нет смысла буферизовать
-            // маленькие TCP-сегменты, важна минимальная задержка первого байта.
+            var ipv4Only = Array.FindAll(
+                allAddresses,
+                static a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+
+            addresses = ipv4Only.Length > 0 ? ipv4Only : allAddresses;
+        }
+        else
+        {
+            addresses = allAddresses;
+        }
+
+        if (addresses.Length == 0)
+            throw new System.Net.Sockets.SocketException(
+                (int)System.Net.Sockets.SocketError.HostNotFound);
+
+        long connectionId = Interlocked.Increment(ref _connectionSequence);
+        var initialUri = ctx.InitialRequestMessage.RequestUri;
+        var initialRange = ctx.InitialRequestMessage.Headers.Range?.ToString() ?? "-";
+
+        Log.Debug(
+            $"[SharedHttpClient] Connect#{connectionId} opening: " +
+            $"endpoint={ctx.DnsEndPoint.Host}:{ctx.DnsEndPoint.Port}, " +
+            $"initial={initialUri?.Host ?? "(none)"}{initialUri?.AbsolutePath ?? string.Empty}, " +
+            $"range={initialRange}, " +
+            $"resolved={addresses.Length}, first={addresses[0]}");
+
+        // Явный AddressFamily из первого адреса: гарантирует отсутствие WSAEAFNOSUPPORT
+        // при ConnectAsync с mismatched address family.
+        var socket = new Socket(
+            addresses[0].AddressFamily,
+            SocketType.Stream,
+            ProtocolType.Tcp)
+        {
+            // Отключаем алгоритм Нейгла: для Range-запросов нет смысла буферизовать
+            // маленькие сегменты — важна минимальная задержка первого байта.
             NoDelay = true,
         };
 
         try
         {
-            // SO_KEEPALIVE — включаем TCP keepalive на уровне ОС.
-            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
-
-            // TCP_KEEPIDLE (Linux) / TCP_KEEPALIVE (macOS) / TcpKeepAliveTime (Windows):
-            // время idle в секундах до отправки первого keepalive-зонда.
-            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 5);
-
-            // TCP_KEEPINTVL: интервал между повторными зондами при отсутствии ответа.
-            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 3);
-
-            // TCP_KEEPCNT: число неотвеченных зондов до закрытия соединения.
-            // На Windows этот параметр игнорируется (фиксировано 10), на Linux/macOS работает.
-            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3);
-
             await socket.ConnectAsync(addresses, ctx.DnsEndPoint.Port, ct).ConfigureAwait(false);
+
+            Log.Debug(
+                $"[SharedHttpClient] Connect#{connectionId} connected: " +
+                $"local={socket.LocalEndPoint}, remote={socket.RemoteEndPoint}");
 
             // ownsSocket: true — NetworkStream берёт ownership и dispose сокета при своём dispose.
             return new NetworkStream(socket, ownsSocket: true);
         }
         catch
         {
-            // При любой ошибке connection disposal обязателен немедленно,
-            // иначе socket leak в FIN_WAIT состоянии.
+            // При любой ошибке соединения немедленный dispose сокета обязателен,
+            // иначе утечка дескриптора в состоянии FIN_WAIT.
             socket.Dispose();
             throw;
         }
@@ -189,7 +252,11 @@ public static class SharedHttpClient
 
             handler.Proxy = webProxy;
             handler.UseProxy = true;
+            return;
         }
+
+        handler.Proxy = null;
+        handler.UseProxy = false;
     }
 
     /// <summary>

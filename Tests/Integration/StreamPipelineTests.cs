@@ -528,7 +528,7 @@ public static class StreamPipelineTests
 
         using var handler = new HttpClientHandler
         {
-            AutomaticDecompression = DecompressionMethods.All,
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
             AllowAutoRedirect = true
         };
 

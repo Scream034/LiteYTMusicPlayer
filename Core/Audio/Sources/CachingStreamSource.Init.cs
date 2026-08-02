@@ -177,7 +177,7 @@ public sealed partial class CachingStreamSource
     private IContainerParser CreateParser(Stream stream) => _format switch
     {
         AudioFormat.WebM or AudioFormat.Ogg => new WebMContainerParser(stream),
-        AudioFormat.Mp4                     => new Mp4ContainerParser(stream),
+        AudioFormat.Mp4 => new Mp4ContainerParser(stream),
         _ => throw new NotSupportedException($"Format not supported: {_format}")
     };
 }

@@ -11,6 +11,53 @@ namespace LMP.Core.Helpers;
 public static class NetworkErrorHelper
 {
     /// <summary>
+    /// Walks the exception chain to the innermost cause and returns a compact,
+    /// log-friendly reason string including <see cref="System.Net.Sockets.SocketError"/>
+    /// and HTTP status when available. Intended for DPI/RST vs timeout disambiguation.
+    /// </summary>
+    /// <param name="exception">Exception to inspect.</param>
+    /// <returns>Compact reason, e.g. <c>socket/ConnectionReset</c> or <c>http/403</c>.</returns>
+    public static string DescribeTransportFailure(Exception? exception)
+    {
+        if (exception is null)
+            return "none";
+
+        System.Net.Sockets.SocketException? socketEx = null;
+        System.Net.Http.HttpRequestException? httpEx = null;
+        IOException? ioEx = null;
+
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            switch (current)
+            {
+                case System.Net.Sockets.SocketException se:
+                    socketEx = se;
+                    break;
+                case System.Net.Http.HttpRequestException he:
+                    httpEx ??= he;
+                    break;
+                case IOException io:
+                    ioEx ??= io;
+                    break;
+            }
+        }
+
+        if (socketEx is not null)
+            return $"socket/{socketEx.SocketErrorCode} ({(int)socketEx.SocketErrorCode})";
+
+        if (httpEx is { StatusCode: { } status })
+            return $"http/{(int)status}";
+
+        if (ioEx is not null)
+            return $"io/{Truncate(ioEx.Message, 80)}";
+
+        return $"{exception.GetType().Name}/{Truncate(exception.Message, 80)}";
+
+        static string Truncate(string s, int max)
+            => s.Length <= max ? s : s[..max];
+    }
+
+    /// <summary>
     /// Checks if the exception is a pure user-initiated cancellation.
     /// <para>
     /// Returns <c>false</c> for HTTP timeouts (<see cref="TaskCanceledException"/>
