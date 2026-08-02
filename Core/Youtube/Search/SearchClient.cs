@@ -1,7 +1,6 @@
 using System.Runtime.CompilerServices;
 using LMP.Core.Helpers.Extensions;
 using static LMP.Core.Youtube.Bridge.SearchResponse;
-using LMP.Core.Youtube.Utils;
 
 namespace LMP.Core.Youtube.Search;
 

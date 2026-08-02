@@ -1,7 +1,6 @@
 using System.Runtime.CompilerServices;
 using LMP.Core.Youtube.Bridge;
 using LMP.Core.Youtube.Exceptions;
-using LMP.Core.Youtube.Utils;
 
 namespace LMP.Core.Youtube.Playlists;
 

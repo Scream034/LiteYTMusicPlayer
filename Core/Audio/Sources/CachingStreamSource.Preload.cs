@@ -225,10 +225,6 @@ public sealed partial class CachingStreamSource
                 }
 #endif
 
-                //  Интервал ожидания перед следующей итерацией 
-                // Delay в конце цикла, а не в начале:
-                // первая итерация выполняется немедленно после startup,
-                // что устраняет мёртвое время PreloadIntervalMs между init и первым preload-запросом.
                 await Task.Delay(_config.PreloadIntervalMs, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { break; }
@@ -378,28 +374,6 @@ public sealed partial class CachingStreamSource
             merged.Add(((double)mergedStart / _contentLength, (double)mergedEnd / _contentLength));
 
         return merged;
-    }
-
-    /// <summary>
-    /// Обновляет URL потока через <see cref="_urlRefresher"/> при истечении 403.
-    /// </summary>
-    private async Task RefreshUrlAsync(CancellationToken ct)
-    {
-        if (_urlRefresher == null) return;
-
-        try
-        {
-            var newUrl = await _urlRefresher(ct).ConfigureAwait(false);
-            if (!string.IsNullOrEmpty(newUrl))
-            {
-                _currentUrl = newUrl;
-                Log.Info("[CachingSource] URL refreshed");
-            }
-        }
-        catch (Exception ex)
-        {
-            Log.Warn($"[CachingSource] URL refresh failed: {ex.Message}");
-        }
     }
 
     #endregion

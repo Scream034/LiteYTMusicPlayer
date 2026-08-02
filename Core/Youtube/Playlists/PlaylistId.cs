@@ -1,6 +1,5 @@
 using System.Net;
 using System.Text.RegularExpressions;
-using LMP.Core.Helpers.Extensions;
 
 namespace LMP.Core.Youtube.Playlists;
 

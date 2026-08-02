@@ -1,6 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
-using LMP.Core.Models;
 
 namespace LMP.Core.Audio.Http;
 

@@ -1,12 +1,20 @@
+# --- Global Engine Configuration ---
 root = true
 
-# Пометить все файлы в папке как "сгенерированный код"
-# Компилятор обычно игнорирует варнинги в таких файлах
+# --- Global Code Formatting Rules ---
+[*]
+indent_style = space
+indent_size = 4
+tab_width = 4
+max_line_length = 120
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+charset = utf-8
+
+# --- Generated Code Overrides ---
 [SharpJaad.AAC/**.cs]
 generated_code = true
-
-# Или точечно отключить конкретные правила для этой папки
-[SharpJaad.AAC/**.cs]
 dotnet_diagnostic.CS8618.severity = none
 dotnet_diagnostic.CS8600.severity = none
 dotnet_diagnostic.CS8602.severity = none
@@ -14,28 +22,50 @@ dotnet_diagnostic.CS8604.severity = none
 dotnet_diagnostic.CS8625.severity = none
 dotnet_diagnostic.CS0420.severity = none
 
+# --- C# Formatting Rules ---
 [*.cs]
-# Неиспользуемые параметры
+# Braces placement (Allman style - new line for all elements)
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_new_line_before_members_in_object_initializers = true
+csharp_new_line_before_members_in_anonymous_types = true
+csharp_new_line_between_query_expression_clauses = true
+
+# Indentation preferences
+csharp_indent_case_contents = true
+csharp_indent_switch_labels = true
+csharp_indent_labels = one_less_than_current
+csharp_indent_block_contents = true
+csharp_indent_braces = false
+
+# Spacing preferences
+csharp_space_after_cast = false
+csharp_space_after_colon_in_inheritance_clause = true
+csharp_space_after_comma = true
+csharp_space_after_dot = false
+csharp_space_after_semicolon_in_for_statement = true
+csharp_space_before_colon_in_inheritance_clause = true
+csharp_space_before_comma = false
+csharp_space_before_dot = false
+csharp_space_before_semicolon_in_for_statement = false
+csharp_space_around_binary_operators = before_and_after
+
+# --- Diagnostics & Analyzer Rules ---
+# Unused symbols / members
 dotnet_diagnostic.IDE0060.severity = warning
-
-# Неиспользуемые private поля/методы/свойства
 dotnet_diagnostic.IDE0051.severity = warning
-
-# Private member assigned but its value is never read
 dotnet_diagnostic.IDE0052.severity = warning
-
-# Ненужные присваивания
 dotnet_diagnostic.IDE0059.severity = warning
-
-# Поле можно сделать readonly
 dotnet_diagnostic.IDE0044.severity = suggestion
 
-# Отключаем тяжёлые правила в Debug
+# Performance & Code Quality suppressions
 dotnet_diagnostic.CA1031.severity = none
 dotnet_diagnostic.CA1062.severity = none
 dotnet_diagnostic.IDE0058.severity = none
 dotnet_diagnostic.IDE0290.severity = none
 dotnet_diagnostic.CA1068.severity = none
 
-# Отключаем все StyleCop правила в Debug
+# StyleCop overrides
 dotnet_analyzer_diagnostic.category-StyleCop.CSharp.MaintainabilityRules.severity = none

@@ -1,5 +1,4 @@
 using System.Runtime.CompilerServices;
-using LMP.Core.Audio.Normalization;
 
 namespace LMP.Core.Audio.Normalization;
 

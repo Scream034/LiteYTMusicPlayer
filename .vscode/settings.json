@@ -1,4 +1,12 @@
 {
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+        "source.organizeImports": "explicit"
+    },
+    "[json]": {
+        "editor.formatOnSave": false,
+        "editor.defaultFormatter": "vscode.json-language-features"
+    },
     "files.exclude": {
         "**/bin/": true,
         "**/obj/": true,

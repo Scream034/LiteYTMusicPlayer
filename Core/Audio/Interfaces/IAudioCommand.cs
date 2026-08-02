@@ -1,5 +1,3 @@
-using LMP.Core.Audio;
-
 namespace LMP.Core.Audio.Interfaces;
 
 /// <summary>

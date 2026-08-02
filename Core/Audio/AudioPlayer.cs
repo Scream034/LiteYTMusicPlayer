@@ -3,7 +3,6 @@ using System.Threading.Channels;
 using LMP.Core.Audio.Helpers;
 using LMP.Core.Audio.Interfaces;
 using LMP.Core.Exceptions;
-using static LMP.Core.Audio.AudioConstants;
 
 namespace LMP.Core.Audio;
 

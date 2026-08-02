@@ -1,7 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using LMP.Core.Audio.Interfaces;
-using LMP.Core.Models;
 using LMP.Core.Models.Json;
 using LMP.Core.Youtube.Utils;
 using LMP.Core.Youtube.Videos.Streams;

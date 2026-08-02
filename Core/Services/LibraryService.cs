@@ -4,7 +4,6 @@ using System.Reactive.Subjects;
 using System.Text.Json;
 using LMP.Core.Data;
 using LMP.Core.Data.Repositories;
-using LMP.Core.Youtube.Utils;
 using Microsoft.EntityFrameworkCore;
 using ReactiveUI;
 

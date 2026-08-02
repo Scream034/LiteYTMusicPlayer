@@ -2,7 +2,6 @@
 using System.Net;
 using System.Runtime.CompilerServices;
 using Avalonia.Media.Imaging;
-using LMP.Core.Audio.Http;
 
 namespace LMP.Core.Services;
 
