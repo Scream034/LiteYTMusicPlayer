@@ -173,14 +173,21 @@ public partial class YoutubeProvider : IDisposable
             UseCookies = false,
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
             AllowAutoRedirect = false,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
 
-            // Фикс зависаний API-запросов (поиск, тексты)
+            // HTTP/2 ping (KeepAlivePingPolicy) работает на application level,
+            // но TCP keepalive детектирует мёртвый туннель на уровне ОС —
+            // независимо от версии HTTP протокола.
+            ConnectCallback = SharedHttpClient.ConnectWithKeepAliveAsync,
+
+            // 2 минуты вместо 5: VPN туннели живут 60-120с при переподключении.
+            // 5 минут гарантировало накопление зомби-соединений.
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+
             PooledConnectionIdleTimeout = TimeSpan.FromSeconds(15),
             MaxConnectionsPerServer = 20,
             EnableMultipleHttp2Connections = true,
 
-            // ПРОАКТИВНЫЙ ПИНГ: постоянно стучится к серверам Google, поддерживая NAT живым
+            // HTTP/2 application-level ping — дополнительный слой поверх TCP keepalive
             KeepAlivePingPolicy = HttpKeepAlivePingPolicy.Always,
             KeepAlivePingDelay = TimeSpan.FromSeconds(15),
             KeepAlivePingTimeout = TimeSpan.FromSeconds(5),

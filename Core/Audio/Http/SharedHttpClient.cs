@@ -124,7 +124,7 @@ public static class SharedHttpClient
     /// DNS resolution выполняется внутри callback через Dns.GetHostAddressesAsync,
     /// что позволяет использовать ctx.DnsEndPoint.AddressFamily для IPv4/IPv6 hint.
     /// </summary>
-    private static async ValueTask<Stream> ConnectWithKeepAliveAsync(
+    internal static async ValueTask<Stream> ConnectWithKeepAliveAsync(
         SocketsHttpConnectionContext ctx,
         CancellationToken ct)
     {

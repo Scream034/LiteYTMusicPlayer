@@ -342,6 +342,14 @@ public sealed partial class CachingStreamSource
 
         ct.ThrowIfCancellationRequested();
 
+        // Source-level circuit breaker: не входим в retry loop если breaker открыт.
+        if (IsSourceCircuitBreakerOpen(out int cbRemainingMs))
+        {
+            int cbDelay = Math.Min(cbRemainingMs, 1000);
+            await Task.Delay(cbDelay, ct).ConfigureAwait(false);
+            return RangeDownloadResult.NetworkError;
+        }
+
         int maxAttempts = _config.MaxNetworkRetries;
         int chunkIoExceptions = 0;
         bool warningPublished = false;
@@ -490,16 +498,100 @@ public sealed partial class CachingStreamSource
         return RangeDownloadResult.NetworkError;
     }
 
+    // --- Section: Source Circuit Breaker ---
+
+    /// <summary>
+    /// Проверяет, открыт ли source-level circuit breaker.
+    /// При истечении backoff переходит в half-open (пропускает один запрос).
+    /// </summary>
+    /// <param name="remainingMs">Оставшийся backoff в мс (0 если закрыт или half-open).</param>
+    /// <returns><c>true</c> если запрос должен быть отклонён.</returns>
+    private bool IsSourceCircuitBreakerOpen(out int remainingMs)
+    {
+        lock (_circuitBreakerLock)
+        {
+            remainingMs = 0;
+            if (!_circuitBreakerIsOpen) return false;
+
+            long elapsed = Environment.TickCount64 - _circuitBreakerOpenedAtTick;
+            remainingMs = _circuitBreakerBackoffMs - (int)elapsed;
+
+            if (remainingMs <= 0)
+            {
+                _circuitBreakerIsOpen = false;
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Регистрирует успешную сетевую операцию: сбрасывает счётчик, закрывает breaker.
+    /// </summary>
+    private void OnSourceNetworkSuccess()
+    {
+        bool wasActive;
+        lock (_circuitBreakerLock)
+        {
+            wasActive = _circuitBreakerIsOpen || _consecutiveSourceNetworkFailures > 0;
+            _consecutiveSourceNetworkFailures = 0;
+            _circuitBreakerIsOpen = false;
+            _circuitBreakerBackoffMs = 0;
+        }
+
+        if (wasActive)
+            Log.Info($"[CachingSource] [{_trackId}] Source circuit breaker CLOSED — network recovered");
+    }
+
+    /// <summary>
+    /// Регистрирует сетевую ошибку. При достижении порога открывает breaker с exponential backoff.
+    /// </summary>
+    private void OnSourceNetworkFailure()
+    {
+        lock (_circuitBreakerLock)
+        {
+            int failures = ++_consecutiveSourceNetworkFailures;
+
+            if (!_circuitBreakerIsOpen && failures >= SourceCircuitBreakerThreshold)
+            {
+                _circuitBreakerIsOpen = true;
+                _circuitBreakerOpenedAtTick = Environment.TickCount64;
+                _circuitBreakerBackoffMs = SourceCircuitBreakerInitialBackoffMs;
+
+                Log.Warn($"[CachingSource] [{_trackId}] Source circuit breaker OPEN: " +
+                         $"{failures} consecutive failures, backoff={_circuitBreakerBackoffMs}ms");
+            }
+            else if (_circuitBreakerIsOpen)
+            {
+                _circuitBreakerOpenedAtTick = Environment.TickCount64;
+                _circuitBreakerBackoffMs = Math.Min(
+                    _circuitBreakerBackoffMs * 2,
+                    SourceCircuitBreakerMaxBackoffMs);
+
+                Log.Debug($"[CachingSource] [{_trackId}] Circuit breaker re-opened: " +
+                          $"backoff={_circuitBreakerBackoffMs}ms");
+            }
+        }
+    }
+
     // --- Section: DownloadRangeCoreAsync ---
 
     /// <summary>
-    /// Оркестрирует загрузку диапазона: слот семафора → URL guard → HTTP.
+    /// Оркестрирует загрузку диапазона: circuit breaker → слот семафора → URL guard → HTTP.
     /// </summary>
     private async Task<RangeDownloadResult> DownloadRangeCoreAsync(
         DownloadPlan plan, CancellationToken ct, bool isCritical)
     {
         if (_disposed) return RangeDownloadResult.Cancelled;
         if (IsRangeLocallyAvailable(plan.Start, plan.Length)) return RangeDownloadResult.Success;
+
+        if (IsSourceCircuitBreakerOpen(out int remainingBackoffMs))
+        {
+            int delay = Math.Min(remainingBackoffMs, 500);
+            await Task.Delay(delay, ct).ConfigureAwait(false);
+            return RangeDownloadResult.NetworkError;
+        }
 
         bool gotSlot = false;
         try
@@ -522,13 +614,27 @@ public sealed partial class CachingStreamSource
                 if (!urlReady)
                 {
                     Log.Warn($"[CachingSource] Range {plan.Start}: continuation URL is unavailable");
+                    OnSourceNetworkFailure();
                     return ct.IsCancellationRequested
                         ? RangeDownloadResult.Cancelled
                         : RangeDownloadResult.NetworkError;
                 }
             }
 
-            return await DownloadRangeHttpAsync(plan, ct).ConfigureAwait(false);
+            var result = await DownloadRangeHttpAsync(plan, ct).ConfigureAwait(false);
+
+            switch (result)
+            {
+                case RangeDownloadResult.Success:
+                case RangeDownloadResult.OutOfRange:
+                    OnSourceNetworkSuccess();
+                    break;
+                case RangeDownloadResult.NetworkError:
+                    OnSourceNetworkFailure();
+                    break;
+            }
+
+            return result;
         }
         catch (ChunkDownloadFatalException) { throw; }
         catch (ObjectDisposedException) when (_disposed || ct.IsCancellationRequested)
@@ -542,6 +648,7 @@ public sealed partial class CachingStreamSource
         catch (Exception ex)
         {
             Log.Warn($"[CachingSource] Range {plan.Start} unexpected: {ex.Message}");
+            OnSourceNetworkFailure();
             return RangeDownloadResult.NetworkError;
         }
         finally

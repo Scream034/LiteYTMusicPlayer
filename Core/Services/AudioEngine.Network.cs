@@ -4,6 +4,15 @@ namespace LMP.Core.Services;
 
 public sealed partial class AudioEngine
 {
+    /// <summary>
+    /// Минимальный интервал между пересборками HTTP-клиентов (мс).
+    /// IP-change (force=true) всегда bypass.
+    /// </summary>
+    private const int RebuildCooldownMs = 15_000;
+
+    /// <summary>Monotonic timestamp последнего rebuild (Environment.TickCount64).</summary>
+    private long _lastRebuildTick;
+
     #region Network Address Monitoring
 
     private void OnNetworkAddressChanged(object? sender, EventArgs e)
@@ -45,16 +54,12 @@ public sealed partial class AudioEngine
             }
 
             if (isTunAddress)
-            {
                 Log.Info($"[AudioEngine] TUN/VPN address detected ({currentIp}) — diff bypass, rebuilding unconditionally.");
-            }
             else
-            {
                 Log.Info($"[AudioEngine] Outbound IP changed: {_lastOutboundIp ?? "(none)"} → {currentIp}. Rebuilding.");
-            }
 
             _lastOutboundIp = currentIp;
-            await RebuildNetworkCoreAsync().ConfigureAwait(false);
+            RebuildNetworkCore(force: true);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -91,7 +96,7 @@ public sealed partial class AudioEngine
             _lastOutboundIp = GetOutboundIp();
 
             Log.Info($"[AudioEngine] Force rebuild. Current outbound IP: {_lastOutboundIp ?? "(none)"}");
-            await RebuildNetworkCoreAsync().ConfigureAwait(false);
+            RebuildNetworkCore(force: false);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -102,19 +107,64 @@ public sealed partial class AudioEngine
 
     #endregion
 
-    #region Client Rebuild Core
+    #region Source-Level Network Events
 
-    private async Task RebuildNetworkCoreAsync()
+    private void HandleSourceNetworkStalled(string trackId)
     {
-        SharedHttpClient.Rebuild(_library.Settings.Proxy);
-        _youtube.ReloadClient();
+        if (!string.Equals(CurrentTrack?.Id, trackId, StringComparison.Ordinal))
+            return;
 
-        Log.Info("[AudioEngine] HTTP clients rebuilt.");
+        Log.Warn($"[AudioEngine] Source-level stall: track='{trackId}' — " +
+                 "triggering proactive HTTP rebuild before PCM underrun");
+
+        NotifyNetworkStarvation();
+    }
+
+    private void HandleSourceNetworkRecovered(string trackId)
+    {
+        if (!string.Equals(CurrentTrack?.Id, trackId, StringComparison.Ordinal))
+            return;
+
+        Log.Info($"[AudioEngine] Source-level network recovered: track='{trackId}'");
 
         AudioSourceFactory.PreWarmCdnConnections(
             SharedHttpClient.Instance, _lifetimeCts.Token);
+    }
 
-        await Task.CompletedTask.ConfigureAwait(false);
+    #endregion
+
+    #region Client Rebuild Core
+
+    /// <summary>
+    /// Единая точка пересборки HTTP-клиентов.
+    /// </summary>
+    /// <param name="force">
+    /// <c>true</c> — bypass cooldown (реальная смена IP, TUN-адрес).
+    /// <c>false</c> — cooldown применяется (starvation, CDN-tunnel dead, source-stall).
+    /// </param>
+    private void RebuildNetworkCore(bool force)
+    {
+        long now = Environment.TickCount64;
+
+        if (!force)
+        {
+            long elapsed = now - Volatile.Read(ref _lastRebuildTick);
+            if (elapsed < RebuildCooldownMs)
+            {
+                Log.Debug($"[AudioEngine] Rebuild skipped — cooldown ({elapsed}ms < {RebuildCooldownMs}ms)");
+                return;
+            }
+        }
+
+        Volatile.Write(ref _lastRebuildTick, now);
+
+        SharedHttpClient.Rebuild(_library.Settings.Proxy);
+        _youtube.ReloadClient();
+
+        Log.Info($"[AudioEngine] HTTP clients rebuilt (force={force}).");
+
+        AudioSourceFactory.PreWarmCdnConnections(
+            SharedHttpClient.Instance, _lifetimeCts.Token);
     }
 
     #endregion
@@ -136,7 +186,8 @@ public sealed partial class AudioEngine
                     && _lastOutboundIp != null
                     && !string.Equals(currentIp, _lastOutboundIp, StringComparison.Ordinal))
                 {
-                    Log.Info($"[AudioEngine] Watchdog: IP change missed by NetworkChange event: {_lastOutboundIp} → {currentIp}");
+                    Log.Info($"[AudioEngine] Watchdog: IP change missed by NetworkChange event: " +
+                            $"{_lastOutboundIp} → {currentIp}");
                     OnNetworkAddressChanged(this, EventArgs.Empty);
                 }
             }

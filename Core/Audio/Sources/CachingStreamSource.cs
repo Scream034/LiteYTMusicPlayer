@@ -83,6 +83,15 @@ public sealed partial class CachingStreamSource : IAudioSource
     /// <summary>Потолок задержки network retry в ReadAtAsync (мс).</summary>
     private const int NetworkRetryMaxBackoffMs = 5000;
 
+    /// <summary>Порог consecutive сетевых ошибок для открытия source-level circuit breaker.</summary>
+    private const int SourceCircuitBreakerThreshold = 15;
+
+    /// <summary>Начальный backoff circuit breaker (мс).</summary>
+    private const int SourceCircuitBreakerInitialBackoffMs = 2_000;
+
+    /// <summary>Максимальный backoff circuit breaker (мс).</summary>
+    private const int SourceCircuitBreakerMaxBackoffMs = 30_000;
+
     #endregion
 
     #region Enums
@@ -225,6 +234,13 @@ public sealed partial class CachingStreamSource : IAudioSource
     private int _requestSequenceNumber;
     private int _consecutiveRefreshFailures;
     private Exception? _lastDownloadException;
+
+    // Source-level circuit breaker
+    private readonly Lock _circuitBreakerLock = new();
+    private int _consecutiveSourceNetworkFailures;
+    private bool _circuitBreakerIsOpen;
+    private long _circuitBreakerOpenedAtTick;
+    private int _circuitBreakerBackoffMs;
 
     //  Latency Tracking & Adaptive Transport 
     private readonly object _latencyLock = new();

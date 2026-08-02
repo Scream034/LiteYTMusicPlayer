@@ -195,6 +195,8 @@ public sealed partial class AudioEngine
 
             _youtube.OnNTokenDecryptionStarted -= HandleNTokenDecryptionStarted;
             CdnConnectionPreWarmer.OnTunnelDeadDetected -= HandleCdnTunnelDead;
+            Audio.Sources.CachingStreamSource.OnNetworkStalled -= HandleSourceNetworkStalled;
+            Audio.Sources.CachingStreamSource.OnNetworkRecovered -= HandleSourceNetworkRecovered;
             lock (_sessionLock) { _sessionCts?.Cancel(); _sessionCts?.Dispose(); }
 
             try
@@ -242,6 +244,8 @@ public sealed partial class AudioEngine
 
         _youtube.OnNTokenDecryptionStarted -= HandleNTokenDecryptionStarted;
         CdnConnectionPreWarmer.OnTunnelDeadDetected -= HandleCdnTunnelDead;
+        Audio.Sources.CachingStreamSource.OnNetworkStalled -= HandleSourceNetworkStalled;
+        Audio.Sources.CachingStreamSource.OnNetworkRecovered -= HandleSourceNetworkRecovered;
         lock (_sessionLock) { _sessionCts?.Cancel(); _sessionCts?.Dispose(); }
 
         _library.UpdateSettings(s =>

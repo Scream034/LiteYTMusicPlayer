@@ -10,9 +10,16 @@ public sealed partial class AudioPlayer
 {
 
     #region Seek Constants
+
     private const int SeekLoopMaxIterations = 50;
     private const int ReSeekDecoderStopTimeoutMs = 200;
     private const int DeferredSeekResumeTimeoutMs = 30_000;
+
+    /// <summary>Порог эскалации deferred warmup: UI-сигнал + повторный rebuild (мс).</summary>
+    private const int DeferredWarmupEscalationMs = 60_000;
+
+    /// <summary>Hard cap deferred warmup: прекращение ожидания, error event (мс).</summary>
+    private const int DeferredWarmupHardCapMs = 180_000;
 
     #endregion
 
@@ -420,6 +427,7 @@ public sealed partial class AudioPlayer
 
     /// <summary>
     /// Фоново ждёт готовности PCM и source-ahead после deferred seek/rebuffer.
+    /// Эскалация: 60s → UI-сигнал + rebuild. 180s → stop.
     /// </summary>
     private async Task AwaitDeferredSeekBufferAndResumeAsync(
         AudioPipeline pipeline,
@@ -432,6 +440,7 @@ public sealed partial class AudioPlayer
         var ct = deferredResumeCts.Token;
         var waitLogSw = System.Diagnostics.Stopwatch.StartNew();
         long nextProgressLogMs = DeferredSeekResumeTimeoutMs;
+        bool escalationFired = false;
 
         try
         {
@@ -440,24 +449,49 @@ public sealed partial class AudioPlayer
                 bool pcmReady = seekThreshold <= 0 || pipeline.BufferedSamples >= seekThreshold;
                 bool sourceReady = IsSourceReadyForResume(pipeline, sourceAheadMs);
 
-                // Source-ahead достаточен → decoder сможет декодировать.
-                // Не ждём PCM ring buffer.
-                if (!pcmReady && sourceReady && GetSourceBufferedAheadMs(pipeline) >= sourceAheadMs)
+                // pcmReady override через source-ahead:
+                // активируется ТОЛЬКО если ring содержит реальные данные (BufferedSamples > 0).
+                // In-flight downloads создают ложный source-ahead: RegisterOrGetActiveDownload
+                // регистрирует запись немедленно после SetPlaybackActive, но данные ещё не пришли.
+                // При starvation это приводит к открытию gate с ring=0 → тишина.
+                if (!pcmReady
+                    && seekThreshold > 0
+                    && pipeline.BufferedSamples > 0
+                    && sourceReady
+                    && GetSourceBufferedAheadMs(pipeline) >= sourceAheadMs)
+                {
                     pcmReady = true;
+                }
 
                 if (!pcmReady && seekThreshold > 0)
                 {
                     int waitSliceMs = sourceAheadMs >= 6000 ? 1000 : 400;
+
                     bool signaled = await pipeline.WaitForBufferAsync(seekThreshold, waitSliceMs, ct)
                         .ConfigureAwait(false);
 
                     pcmReady = signaled || pipeline.BufferedSamples >= seekThreshold;
                     sourceReady = IsSourceReadyForResume(pipeline, sourceAheadMs);
+
+                    if (!pcmReady
+                        && seekThreshold > 0
+                        && pipeline.BufferedSamples > 0
+                        && sourceReady
+                        && GetSourceBufferedAheadMs(pipeline) >= sourceAheadMs)
+                    {
+                        pcmReady = true;
+                    }
                 }
 
                 if (pcmReady && sourceReady)
                 {
                     int ringBufferSamples = pipeline.BufferedSamples;
+
+                    if (seekThreshold > 0 && ringBufferSamples == 0)
+                    {
+                        await Task.Delay(100, ct).ConfigureAwait(false);
+                        continue;
+                    }
 
                     if (!_commandChannel.Writer.TryWrite(new DeferredResumeCommand(
                             sessionId,
@@ -472,14 +506,32 @@ public sealed partial class AudioPlayer
                     return;
                 }
 
-                if (waitLogSw.ElapsedMilliseconds >= nextProgressLogMs)
+                long elapsedMs = waitLogSw.ElapsedMilliseconds;
+
+                if (elapsedMs >= nextProgressLogMs)
                 {
                     Log.Warn($"[SeekTelemetry] Deferred warmup still waiting " +
                              $"(ring={pipeline.BufferedSamples}/{seekThreshold}, " +
                              $"ahead={GetSourceBufferedAheadMs(pipeline)}ms/{sourceAheadMs}ms, " +
-                             $"elapsed={waitLogSw.ElapsedMilliseconds}ms)");
+                             $"elapsed={elapsedMs}ms)");
 
                     nextProgressLogMs += DeferredSeekResumeTimeoutMs;
+                }
+
+                if (!escalationFired && elapsedMs >= DeferredWarmupEscalationMs)
+                {
+                    escalationFired = true;
+                    Log.Warn($"[SeekTelemetry] Deferred warmup exceeded {DeferredWarmupEscalationMs / 1000}s — " +
+                             "network likely unavailable, escalating");
+
+                    _options.OnStarvationDetected?.Invoke();
+                }
+
+                if (elapsedMs >= DeferredWarmupHardCapMs)
+                {
+                    Log.Error($"[SeekTelemetry] Deferred warmup hard timeout ({DeferredWarmupHardCapMs / 1000}s)");
+                    _commandChannel.Writer.TryWrite(new StopCommand(sessionId));
+                    return;
                 }
 
                 await Task.Delay(100, ct).ConfigureAwait(false);

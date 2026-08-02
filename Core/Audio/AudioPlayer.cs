@@ -571,6 +571,15 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
             _ => isSeek ? 4000 : 10000
         };
 
+        // NToken / network-contention guard
+        if (!isSeek
+            && pipeline.Source is Sources.CachingStreamSource csForBandwidth
+            && csForBandwidth.EstimatedSpeedBytesPerSec <= 0)
+        {
+            sourceAheadMs = Math.Max(sourceAheadMs, 3000);
+            warmupTimeoutMs = Math.Max(warmupTimeoutMs, 8000);
+        }
+
         int samples = pipeline.SampleRate * pipeline.Channels * pcmThresholdMs / 1000;
         return new PlaybackWarmupPlan(Math.Max(samples, pipeline.Channels), sourceAheadMs, warmupTimeoutMs);
     }
@@ -1017,26 +1026,58 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
         if (IsPipelineCommandStale(cmd.Pipeline, cmd.SessionId))
             return Task.CompletedTask;
 
-        if (_state != PlayerState.Playing)
+        // Принимаем starvation из Playing и Buffering:
+        // из Playing — нормальный путь (ring опустел при воспроизведении);
+        // из Buffering — сеть упала во время post-seek rebuffer (deferred resume уже активен,
+        // но его CTS будет заменён новым в LaunchDeferredResume).
+        if (_state is not (PlayerState.Playing or PlayerState.Buffering))
             return Task.CompletedTask;
 
         if (CurrentPlaybackIntent != PlaybackIntent.Play)
             return Task.CompletedTask;
 
-        Log.Warn("[AudioPlayer] Starvation — closing gate for adaptive rebuffer");
+        Log.Warn($"[AudioPlayer] Starvation in state={_state} — closing gate for adaptive rebuffer");
 
         var pipeline = cmd.Pipeline;
 
-        pipeline.Stop();
-        StopTimers();
+        // Stop только если играем: при Buffering backend уже остановлен.
+        if (_state == PlayerState.Playing)
+        {
+            pipeline.Stop();
+            StopTimers();
+        }
 
         SetState(PlayerState.Buffering);
         _options.OnStarvationDetected?.Invoke();
 
-        var warmupPlan = ComputePlaybackWarmupPlan(pipeline, isSeek: false);
-        LaunchDeferredResume(pipeline, warmupPlan, cmd.SessionId);
+        var recoveryPlan = ComputeStarvationRecoveryPlan(pipeline);
+        LaunchDeferredResume(pipeline, recoveryPlan, cmd.SessionId);
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Вычисляет план восстановления после starvation с повышенными порогами.
+    /// </summary>
+    private static PlaybackWarmupPlan ComputeStarvationRecoveryPlan(AudioPipeline pipeline)
+    {
+        var basePlan = ComputePlaybackWarmupPlan(pipeline, isSeek: false);
+
+        int recoverySourceAheadMs = basePlan.SourceAheadMs > 0
+            ? Math.Min(basePlan.SourceAheadMs * 2, 8000)
+            : 3000;
+
+        // basePlan.PcmThresholdSamples = 0 при IsFullyBuffered=true.
+        // Нулевой threshold даёт pcmReady=true немедленно при ring=0 → resume без данных.
+        // Минимум 100ms samples гарантирует что ring содержит реальные декодированные данные.
+        int recoveryPcmSamples = basePlan.PcmThresholdSamples > 0
+            ? (int)(basePlan.PcmThresholdSamples * 1.5)
+            : pipeline.SampleRate * pipeline.Channels * 100 / 1000;
+
+        return new PlaybackWarmupPlan(
+            Math.Max(recoveryPcmSamples, pipeline.Channels * 2),
+            recoverySourceAheadMs,
+            basePlan.WarmupTimeoutMs);
     }
 
     /// <summary>
