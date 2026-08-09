@@ -33,6 +33,9 @@ public static class SharedHttpClient
             oldClient = Interlocked.Exchange(ref _instance, newClient);
         }
 
+        // Сбрасываем DoH-кэш: при смене сети IP-адреса YouTube могут измениться
+        DohResolver.InvalidateCache();
+
         if (oldClient is not null)
         {
             _ = Task.Delay(TimeSpan.FromSeconds(30))
@@ -125,73 +128,42 @@ public static class SharedHttpClient
 
     /// <summary>
     /// Callback установки TCP-соединения для <see cref="SocketsHttpHandler"/>.
+    /// При DNS-блокировке YouTube-доменов автоматически переключается на DoH
+    /// (<see cref="DohResolver"/>).
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Реализует два поведения, недоступных через стандартные свойства <see cref="SocketsHttpHandler"/>:
-    /// </para>
-    /// <para>
-    /// <b>1. Принудительный IPv4 при неопределённом AddressFamily.</b><br/>
-    /// При <see cref="System.Net.Sockets.AddressFamily.Unspecified"/> DNS может вернуть AAAA-записи,
-    /// и <see cref="System.Net.Sockets.Socket"/> по умолчанию создаётся как dual-stack IPv6.
-    /// Трафик по IPv6 обходит WinDivert-based инструменты обхода DPI (zapret, GoodbyeDPI),
-    /// которые перехватывают только IPv4-пакеты.
-    /// Метод фильтрует адреса до IPv4 (<see cref="System.Net.Sockets.AddressFamily.InterNetwork"/>),
-    /// сохраняя fallback на полный список при отсутствии A-записей.
-    /// </para>
-    /// <para>
-    /// <b>2. Явный <see cref="System.Net.Sockets.AddressFamily"/> в конструкторе Socket.</b><br/>
-    /// Создание <c>new Socket(SocketType.Stream, ProtocolType.Tcp)</c> без <c>AddressFamily</c>
-    /// может завершиться <see cref="System.Net.Sockets.SocketException"/>
-    /// (<c>WSAEAFNOSUPPORT</c>) при несоответствии семейства адреса и сокета.
-    /// Конструктор с явным <c>addresses[0].AddressFamily</c> исключает эту ситуацию.
-    /// </para>
-    /// <para>
-    /// TCP keepalive намеренно <b>отсутствует</b>. При ТСПУ silent-drop keepalive-зонды
-    /// уходят в никуда; ОС считает N потерянных зондов отказом сети и закрывает сокет
-    /// с <c>ConnectionReset (10054)</c>, скрывая истинную причину. Таймаут регулируется
-    /// через <see cref="HttpClient.Timeout"/> на уровне HTTP-запроса.
-    /// </para>
-    /// </remarks>
-    /// <param name="ctx">
-    /// Контекст подключения: DNS-endpoint, AddressFamily-подсказка и начальный HTTP-запрос,
-    /// инициировавший открытие нового соединения.
-    /// </param>
-    /// <param name="ct">Токен отмены.</param>
-    /// <returns>
-    /// Открытый <see cref="NetworkStream"/> поверх установленного TCP-сокета.
-    /// </returns>
-    /// <exception cref="System.Net.Sockets.SocketException">
-    /// Выбрасывается, если DNS не вернул ни одного адреса или TCP Connect завершился ошибкой.
-    /// </exception>
     internal static async ValueTask<Stream> ConnectWithKeepAliveAsync(
         SocketsHttpConnectionContext ctx,
         CancellationToken ct)
     {
-        var allAddresses = await Dns.GetHostAddressesAsync(
-            ctx.DnsEndPoint.Host,
-            ctx.DnsEndPoint.AddressFamily,
-            ct).ConfigureAwait(false);
-
-        // При AddressFamily.Unspecified DNS возвращает A и AAAA.
-        // Оставляем только IPv4: WinDivert-based bypass работает только на IPv4.
         IPAddress[] addresses;
-        if (ctx.DnsEndPoint.AddressFamily == System.Net.Sockets.AddressFamily.Unspecified)
-        {
-            var ipv4Only = Array.FindAll(
-                allAddresses,
-                static a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
 
-            addresses = ipv4Only.Length > 0 ? ipv4Only : allAddresses;
-        }
-        else
+        try
         {
-            addresses = allAddresses;
+            addresses = await ResolveWithIpv4PreferenceAsync(
+                ctx.DnsEndPoint.Host, ctx.DnsEndPoint.AddressFamily, ct)
+                .ConfigureAwait(false);
+        }
+        catch (SocketException ex) when (
+            ex.SocketErrorCode is SocketError.HostNotFound or SocketError.NoData &&
+            DohResolver.IsFallbackDomain(ctx.DnsEndPoint.Host))
+        {
+            // Системный DNS заблокирован провайдером или Zapret — fallback на DoH
+            Log.Warn($"[SharedHttpClient] DNS blocked for {ctx.DnsEndPoint.Host}, " +
+                     $"trying DoH fallback...");
+
+            var dohResult = await DohResolver.ResolveAsync(ctx.DnsEndPoint.Host, ct)
+                .ConfigureAwait(false);
+
+            if (dohResult is null || dohResult.Length == 0)
+            {
+                throw new SocketException((int)SocketError.HostNotFound);
+            }
+
+            addresses = dohResult;
         }
 
         if (addresses.Length == 0)
-            throw new System.Net.Sockets.SocketException(
-                (int)System.Net.Sockets.SocketError.HostNotFound);
+            throw new SocketException((int)SocketError.HostNotFound);
 
         long connectionId = Interlocked.Increment(ref _connectionSequence);
         var initialUri = ctx.InitialRequestMessage.RequestUri;
@@ -204,36 +176,54 @@ public static class SharedHttpClient
             $"range={initialRange}, " +
             $"resolved={addresses.Length}, first={addresses[0]}");
 
-        // Явный AddressFamily из первого адреса: гарантирует отсутствие WSAEAFNOSUPPORT
-        // при ConnectAsync с mismatched address family.
         var socket = new Socket(
             addresses[0].AddressFamily,
             SocketType.Stream,
             ProtocolType.Tcp)
         {
-            // Отключаем алгоритм Нейгла: для Range-запросов нет смысла буферизовать
-            // маленькие сегменты — важна минимальная задержка первого байта.
             NoDelay = true,
         };
 
         try
         {
-            await socket.ConnectAsync(addresses, ctx.DnsEndPoint.Port, ct).ConfigureAwait(false);
+            await socket.ConnectAsync(addresses, ctx.DnsEndPoint.Port, ct)
+                .ConfigureAwait(false);
 
             Log.Debug(
                 $"[SharedHttpClient] Connect#{connectionId} connected: " +
                 $"local={socket.LocalEndPoint}, remote={socket.RemoteEndPoint}");
 
-            // ownsSocket: true — NetworkStream берёт ownership и dispose сокета при своём dispose.
             return new NetworkStream(socket, ownsSocket: true);
         }
         catch
         {
-            // При любой ошибке соединения немедленный dispose сокета обязателен,
-            // иначе утечка дескриптора в состоянии FIN_WAIT.
             socket.Dispose();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Резолвит DNS с фильтрацией до IPv4 для WinDivert-совместимости.
+    /// Выделен из ConnectCallback для переиспользования в DoH fallback path.
+    /// </summary>
+    private static async Task<IPAddress[]> ResolveWithIpv4PreferenceAsync(
+        string host,
+        AddressFamily requestedFamily,
+        CancellationToken ct)
+    {
+        var allAddresses = await Dns.GetHostAddressesAsync(
+            host, requestedFamily, ct).ConfigureAwait(false);
+
+        if (requestedFamily != AddressFamily.Unspecified)
+            return allAddresses;
+
+        // При Unspecified DNS возвращает A и AAAA.
+        // Оставляем только IPv4: WinDivert-based bypass работает только на IPv4.
+        var ipv4Only = Array.FindAll(
+            allAddresses,
+            static a => a.AddressFamily == AddressFamily.InterNetwork);
+
+        return ipv4Only.Length > 0 ? ipv4Only : allAddresses;
     }
 
     /// <summary>

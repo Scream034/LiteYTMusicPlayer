@@ -149,7 +149,7 @@ public sealed class TestConfig
         /// VideoId для детального debug теста DebugSpecificStreamAsync.
         /// </summary>
         [JsonPropertyName("debugVideoId")]
-        public string DebugVideoId { get; init; } = "_7PZbh-Jjuw";
+        public string DebugVideoId { get; init; } = "dQw4w9WgXcQ";
 
         /// <summary>
         /// Целевой itag для debug теста.

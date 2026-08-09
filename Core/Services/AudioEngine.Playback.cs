@@ -166,14 +166,22 @@ public sealed partial class AudioEngine
     /// <summary>
     /// Основной метод подготовки и запуска воспроизведения трека с поддержкой SeekPosition и ленивой загрузки.
     /// </summary>
-    private async Task PlayTrackCoreAsync(TrackInfo track, int session, CancellationToken ct, TimeSpan? seekPosition = null, bool startPlaying = true)
+    private async Task PlayTrackCoreAsync(
+       TrackInfo track,
+       int session,
+       CancellationToken ct,
+       TimeSpan? seekPosition = null,
+       bool startPlaying = true)
     {
-        if (_session.IsStale(session) || IsSealedFailedTrack(track.Id)) return;
+        if (_session.IsStaleOrCancelled(session, ct) || IsSealedFailedTrack(track.Id))
+            return;
 
-        Log.Debug($"[AudioEngine] [PlayTrackCore] Initiating playback for track: {track.Id} | Session: {session} | StartPlaying: {startPlaying}");
+        Log.Debug($"[AudioEngine] [PlayTrackCore] Initiating playback for track: {track.Id} | " +
+                  $"Session: {session} | StartPlaying: {startPlaying}");
 
         _player.Stop();
-        if (_session.IsStale(session) || IsSealedFailedTrack(track.Id)) return;
+        if (_session.IsStaleOrCancelled(session, ct) || IsSealedFailedTrack(track.Id))
+            return;
 
         SetManualLoading(true);
 
@@ -209,10 +217,11 @@ public sealed partial class AudioEngine
             Volatile.Write(ref _nTokenActiveTrackId, track.Id);
             Volatile.Write(ref _nTokenWarnedTrackId, null);
 
-            AudioSourceFactory.PreWarmCdnConnections(
-                SharedHttpClient.Instance, _lifetimeCts.Token);
+            Audio.AudioSourceFactory.PreWarmCdnConnections(
+                Audio.Http.SharedHttpClient.Instance, _lifetimeCts.Token);
 
             const int maxStartupAttempts = 3;
+            const int maxCdnFailoverAttempts = 3;
 
             for (int attempt = 1; attempt <= maxStartupAttempts; attempt++)
             {
@@ -221,41 +230,75 @@ public sealed partial class AudioEngine
                     ct.ThrowIfCancellationRequested();
 
                     var descriptor = await Task.Run(
-                        () => ResolveStreamAsync(track, ct, seekPosition), ct).ConfigureAwait(false);
+                        () => ResolveStreamAsync(track, ct, seekPosition), ct)
+                        .ConfigureAwait(false);
 
                     if (descriptor.HasPerceptualLufs)
                     {
                         track.SetIntegratedLufs(
                             descriptor.IntegratedLufs,
-                            LoudnessSource.YoutubePerceptual);
+                            Audio.Normalization.LoudnessSource.YoutubePerceptual);
 
                         CommitIntegratedLufs(
                             track.Id,
                             descriptor.IntegratedLufs,
-                            LoudnessSource.YoutubePerceptual);
+                            Audio.Normalization.LoudnessSource.YoutubePerceptual);
                     }
 
-                    if (_session.IsStaleOrCancelled(session, ct) || IsSealedFailedTrack(track.Id)) return;
+                    if (_session.IsStaleOrCancelled(session, ct) || IsSealedFailedTrack(track.Id))
+                        return;
 
                     Log.Info($"[AudioEngine] PlayTrackCore resolved -> {descriptor}");
 
-                    await _player.PlayAsync(descriptor, ct, seekPosition: seekPosition).ConfigureAwait(false);
+                    await _player.PlayAsync(descriptor, ct, seekPosition: seekPosition)
+                        .ConfigureAwait(false);
 
                     if (descriptor.HasPerceptualLufs)
                     {
-                        AudioSourceFactory.GlobalCache?.TryUpdateIntegratedLufs(
+                        Audio.AudioSourceFactory.GlobalCache?.TryUpdateIntegratedLufs(
                             track.Id,
                             descriptor.IntegratedLufs,
-                            LoudnessSource.YoutubePerceptual);
+                            Audio.Normalization.LoudnessSource.YoutubePerceptual);
                     }
 
-                    PreWarmNextTracksInQueue(CurrentQueueIndex, SharedHttpClient.Instance, _lifetimeCts.Token);
+                    PreWarmNextTracksInQueue(
+                        CurrentQueueIndex,
+                        Audio.Http.SharedHttpClient.Instance,
+                        _lifetimeCts.Token);
                     break;
                 }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch (OperationCanceledException ex) when (attempt < maxStartupAttempts)
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
-                    Log.Warn($"[AudioEngine] Transient cancellation during track startup (attempt {attempt}/{maxStartupAttempts}): {ex.Message}");
+                    throw;
+                }
+                catch (Exception ex)
+                    when (TryExtractCdnException(ex) is { } cdnEx
+                          && attempt < maxCdnFailoverAttempts)
+                {
+                    Log.Warn($"[AudioEngine] CDN unavailable: host={cdnEx.Host}, " +
+                             $"attempt={attempt}/{maxCdnFailoverAttempts}. " +
+                             "Blacklisting host and forcing manifest refresh.");
+
+                    Audio.AudioSourceFactory.CdnBlacklist.MarkBlocked(cdnEx.Host);
+                    _youtube.InvalidateMemoryCache(track.Id);
+                    Audio.Http.SessionCacheStore.Invalidate(track.Id);
+
+                    _player.Stop();
+                    await Task.Delay(300, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException ex)
+                    when (attempt < maxStartupAttempts)
+                {
+                    Log.Warn($"[AudioEngine] Transient cancellation during track startup " +
+                             $"(attempt {attempt}/{maxStartupAttempts}): {ex.Message}");
+                    _player.Stop();
+                    await Task.Delay(150, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException ex)
+                    when (attempt < maxStartupAttempts)
+                {
+                    Log.Warn($"[AudioEngine] Transient cancellation during track startup " +
+                             $"(attempt {attempt}/{maxStartupAttempts}): {ex.Message}");
                     _player.Stop();
                     await Task.Delay(150, ct).ConfigureAwait(false);
                 }

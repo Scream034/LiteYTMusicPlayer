@@ -188,6 +188,7 @@
   "Error_Login_MembersOnly": "This content is available only to channel members.",
   "Error_Login_Private": "This is a private video. Access requires authorization.",
   "Error_Login_Required": "This content requires signing in to YouTube. Please go to Settings → Account and add your cookies.",
+  "Error_Cdn_Unavailable": "CDN server blocked by provider. Zapret/VPN required.",
   "Error_Network_ConnectionFailed": "Could not connect to YouTube servers. Check your internet connection.",
   "Error_Network_Generic": "Network error connecting to YouTube. Check your internet connection.",
   "Error_Network_Timeout": "Connection to YouTube servers timed out. Check your internet or VPN.",

@@ -407,6 +407,25 @@ internal static class SessionCacheStore
     }
 
     /// <summary>
+    /// Возвращает снимок всех trackId из текущего кэша.
+    /// Используется диагностическими тестами для probe всех известных стримов.
+    /// </summary>
+    internal static IReadOnlyList<string> GetAllCachedTrackIds()
+    {
+        lock (_lock)
+        {
+            if (_data.Manifests.Count == 0)
+                return [];
+
+            var result = new string[_data.Manifests.Count];
+            for (int i = 0; i < _data.Manifests.Count; i++)
+                result[i] = _data.Manifests[i].TrackId;
+
+            return result;
+        }
+    }
+
+    /// <summary>
     /// Инвалидирует запись для трека (после фатальной 403 или force refresh).
     /// </summary>
     public static void Invalidate(string trackId)

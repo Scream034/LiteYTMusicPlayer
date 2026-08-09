@@ -508,19 +508,41 @@ public sealed partial class AudioEngine
 
     #region Cache & Metadata Helpers
 
-    private static VariantEntry? SelectBestVariantFromEntry(List<VariantEntry> variants, AudioFormat? preferredFormat)
+    /// <summary>
+    /// Выбирает вариант из записи манифеста, предпочитая хосты не в CDN blacklist.
+    /// </summary>
+    private static VariantEntry? SelectBestVariantFromEntry(
+        List<VariantEntry> variants,
+        AudioFormat? preferredFormat)
     {
         if (variants.Count == 0) return null;
 
-        if (preferredFormat is { } requestedFormat && requestedFormat != AudioFormat.Unknown)
+        var blacklist = Audio.AudioSourceFactory.CdnBlacklist;
+
+        // Сначала ищем вариант с нужным форматом, не в blacklist
+        if (preferredFormat is { } fmt && fmt != AudioFormat.Unknown)
         {
             for (int i = 0; i < variants.Count; i++)
             {
-                if (variants[i].Format == requestedFormat)
-                    return variants[i];
+                if (variants[i].Format != fmt) continue;
+                if (!blacklist.IsBlockedUrl(variants[i].Url)) return variants[i];
+            }
+
+            // Все нужного формата заблокированы — берём любой того формата
+            for (int i = 0; i < variants.Count; i++)
+            {
+                if (variants[i].Format == fmt) return variants[i];
             }
         }
 
+        // Без формата — любой не заблокированный
+        for (int i = 0; i < variants.Count; i++)
+        {
+            if (!blacklist.IsBlockedUrl(variants[i].Url)) return variants[i];
+        }
+
+        // Все заблокированы — fallback на первый (YouTube API даст другой CDN)
+        Log.Warn("[AudioEngine] All manifest variants are CDN-blacklisted — using first anyway");
         return variants[0];
     }
 

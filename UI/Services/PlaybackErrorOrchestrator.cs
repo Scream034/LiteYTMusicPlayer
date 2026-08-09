@@ -177,6 +177,8 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
             await (actualException switch
             {
                 BotDetectionException botEx => HandleBotDetectionAsync(botEx),
+                CdnUnavailableException cdnEx
+                    => HandleCdnUnavailableAsync(cdnEx, isDuplicate),
                 YoutubeNetworkException netEx => HandleNetworkErrorAsync(netEx, isDuplicate),
                 LoginRequiredException loginEx => HandleLoginRequiredAsync(loginEx, isDuplicate),
                 StreamUnavailableException streamEx => HandleStreamUnavailableAsync(streamEx, isDuplicate),
@@ -191,6 +193,26 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
         {
             Log.Error($"[Orchestrator] Error in handler: {ex.Message}", ex);
         }
+    }
+
+    /// <summary>
+    /// CDN заблокирован ТСПУ для media-трафика.
+    /// Failover уже запущен в <see cref="AudioEngine"/> — здесь только уведомление
+    /// если все попытки исчерпаны.
+    /// </summary>
+    private async Task HandleCdnUnavailableAsync(
+        LMP.Core.Exceptions.CdnUnavailableException exception,
+        bool isDuplicate)
+    {
+        Log.Warn($"[Orchestrator] CDN unavailable (all failover attempts exhausted): " +
+                 $"host={exception.Host}");
+
+        await DispatchPlaybackErrorAsync(
+            exception,
+            "Error_Cdn_Unavailable",
+            null,
+            isDuplicate,
+            recommendationKeyOverride: "Recommendation_DpiBlocked");
     }
 
     /// <summary>
@@ -474,7 +496,8 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
                 StreamUnavailableException or
                 ChunkDownloadFatalException or
                 VideoUnplayableException or
-                YoutubeNetworkException)
+                YoutubeNetworkException or
+                CdnUnavailableException)
             {
                 return inner;
             }

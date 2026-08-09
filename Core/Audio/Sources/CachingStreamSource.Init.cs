@@ -57,6 +57,23 @@ public sealed partial class CachingStreamSource
                             "Failed to acquire continuation URL for source initialization");
                 }
 
+                // Делаем Range: bytes=0-1 с коротким таймаутом перед полным fetch.
+                // Если ТСПУ дропает /videoplayback — быстро фейлим, не ждём 20s timeout.
+                if (!string.IsNullOrEmpty(_currentUrl))
+                {
+                    bool mediaAvailable = await Http.MediaPathProbe
+                        .IsMediaAvailableAsync(_currentUrl, timeoutMs: 4000, _lifetimeCts.Token)
+                        .ConfigureAwait(false);
+
+                    if (!mediaAvailable)
+                    {
+                        var host = Http.MediaPathProbe.ExtractHost(_currentUrl);
+                        Log.Warn($"[CachingSource] [{_trackId}] CDN probe FAILED: " +
+                                 $"host={host} — ТСПУ may be blocking media path");
+                        throw new Exceptions.CdnUnavailableException(host, _currentUrl);
+                    }
+                }
+
                 await EnsureRangeAsync(0, initialBytes, _lifetimeCts.Token, isCritical: true)
                     .ConfigureAwait(false);
             }

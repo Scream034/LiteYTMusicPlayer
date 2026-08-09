@@ -17,6 +17,12 @@ public static class AudioSourceFactory
     private static volatile StreamingConfig _currentConfig = StreamingProfiles.Medium;
 
     /// <summary>
+    /// Runtime blacklist CDN-хостов, заблокированных для media-трафика ТСПУ.
+    /// Singleton — живёт весь жизненный цикл приложения.
+    /// </summary>
+    internal static readonly CdnBlacklist CdnBlacklist = new(ttl: TimeSpan.FromMinutes(5));
+
+    /// <summary>
     /// Инициализирует глобальный кэш-менеджер.
     /// </summary>
     public static void InitializeGlobalCache(AudioCacheManager cacheManager)

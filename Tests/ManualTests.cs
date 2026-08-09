@@ -100,4 +100,24 @@ public static class ManualTests
     /// <summary>Тест проблемного CDN узла 74.125.104.73.</summary>
     public static Task TestProblemCdnAsync() =>
         Integration.CdnDiagnosticTests.TestProblemIpDirectAsync(AppEntry.Services);
+
+    /// <summary>Multi-manifest CDN discovery: какие хосты YouTube отдаёт и какие заблокированы.</summary>
+    public static Task DiagnoseCdnMultiManifestAsync() =>
+        Integration.CdnDiagnosticTests.TestMultiManifestMediaProbeAsync(AppEntry.Services);
+
+    /// <summary>Сравнение CDN доступности между сетями. Запустить дважды (до/после переключения).</summary>
+    public static Task DiagnoseCdnNetworkTransitionAsync() =>
+        Integration.CdnDiagnosticTests.TestNetworkTransitionAsync(AppEntry.Services);
+
+    /// <summary>Проверка media path для недавно использованных стримов.</summary>
+    public static Task DiagnoseCdnActiveStreamAsync() =>
+        Integration.CdnDiagnosticTests.TestActiveStreamProbeAsync();
+
+    /// <summary>DNS-диагностика: резолвятся ли youtube.com и CDN хосты.</summary>
+    public static Task DiagnoseDnsAsync() =>
+        Integration.CdnDiagnosticTests.TestDnsResolutionAsync();
+
+    /// <summary>Проверка альтернативного API endpoint через googleapis.com (bypass ТСПУ без Zapret).</summary>
+    public static Task TestAlternativeApiAsync() =>
+        Integration.CdnDiagnosticTests.TestAlternativeApiEndpointAsync();
 }

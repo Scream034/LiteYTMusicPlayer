@@ -558,5 +558,20 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Извлекает <see cref="CdnUnavailableException"/> из любого уровня цепочки исключений.
+    /// </summary>
+    private static Exceptions.CdnUnavailableException? TryExtractCdnException(Exception ex)
+    {
+        var current = ex;
+        while (current is not null)
+        {
+            if (current is Exceptions.CdnUnavailableException cdn)
+                return cdn;
+            current = current.InnerException;
+        }
+        return null;
+    }
+
     #endregion
 }

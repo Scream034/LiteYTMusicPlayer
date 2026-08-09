@@ -72,9 +72,7 @@ public static class TestDiscovery
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════
     // PRIVATE
-    // ═══════════════════════════════════════════════════════════════
 
     private static FrozenDictionary<string, TestDescriptor> Discover()
     {
