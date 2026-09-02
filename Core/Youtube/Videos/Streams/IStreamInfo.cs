@@ -30,25 +30,3 @@ public interface IStreamInfo
     /// </summary>
     Bitrate Bitrate { get; }
 }
-
-public static class StreamInfoExtensions
-{
-    extension<T>(T streamInfo) where T : IStreamInfo
-    {
-        public bool IsThrottled() =>
-            !string.Equals(
-                UrlEx.TryGetQueryParameterValue(streamInfo.Url, "ratebypass"),
-                "yes",
-                StringComparison.OrdinalIgnoreCase
-            );
-    }
-
-    extension<T>(IEnumerable<T> streamInfos) where T : IStreamInfo
-    {
-        public T? TryGetWithHighestBitrate() => streamInfos.MaxBy(static s => s.Bitrate);
-
-        public T GetWithHighestBitrate() =>
-            streamInfos.TryGetWithHighestBitrate()
-            ?? throw new InvalidOperationException("Input stream collection is empty.");
-    }
-}

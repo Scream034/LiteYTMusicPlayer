@@ -18,9 +18,9 @@ public static class NTokenTests
 {
     private static string TestToken => TestConfig.Get().NToken.TestToken;
 
-    // ══════════════════════════════════════════════════════════════════
+    // 
     // LIVE INTEGRATION TESTS
-    // ══════════════════════════════════════════════════════════════════
+    // 
 
     /// <summary>
     /// Полный integration-тест дешифрации N-Token через production pipeline:
@@ -101,9 +101,9 @@ public static class NTokenTests
         Log.Info($"[NToken] Idempotency guard OK in {sw.ElapsedMilliseconds}ms");
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 
     // AST SOLVER + QUICKJS UNIT TEST (offline, cached player required)
-    // ══════════════════════════════════════════════════════════════════
+    // 
 
     /// <summary>
     /// Верифицирует полный pipeline: AST preprocessing → QuickJS persistent context →
@@ -181,9 +181,9 @@ public static class NTokenTests
         Log.Info($"[AST] ✓ Player version {usedVersion} verified successfully");
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 
     // PLAYER VERSION COMPATIBILITY
-    // ══════════════════════════════════════════════════════════════════
+    // 
 
     /// <summary>
     /// Тестирует совместимость с несколькими закэшированными версиями плеера.
@@ -207,7 +207,7 @@ public static class NTokenTests
 
         foreach (var version in config.Versions)
         {
-            Log.Info($"\n[NToken] ═══ Version: {version} ═══");
+            Log.Info($"\n[NToken]  Version: {version} ");
 
             var context = PlayerContext.LoadFromCacheNoExpiry(version);
             if (context is null)
@@ -276,9 +276,9 @@ public static class NTokenTests
             throw new Exception($"Version compatibility: {failed} version(s) failed");
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 
     // BENCHMARK
-    // ══════════════════════════════════════════════════════════════════
+    // 
 
     /// <summary>
     /// Бенчмарк производительности persistent context vs создание context на каждый вызов.

@@ -1,8 +1,6 @@
 using System.Reactive;
 using System.Reactive.Linq;
 using ReactiveUI;
-
-using LMP.Core.Services;
 using Avalonia.Media;
 
 namespace LMP.UI.Features.Library;

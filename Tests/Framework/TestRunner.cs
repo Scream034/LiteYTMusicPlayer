@@ -79,9 +79,9 @@ public sealed class TestRunner
     public Task<IReadOnlyList<TestResult>> RunAllAsync(CancellationToken ct = default) =>
         RunBatchAsync(TestDiscovery.GetAllOrdered(), ct);
 
-    // ═══════════════════════════════════════════════════════════════
+    // 
     // PRIVATE
-    // ═══════════════════════════════════════════════════════════════
+    // 
 
     /// <summary>
     /// Выполняет тест с обёрткой: таймаут, exception handling, замер времени.

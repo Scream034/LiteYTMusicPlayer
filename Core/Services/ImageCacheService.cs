@@ -356,7 +356,7 @@ public sealed class ImageCacheService : IDisposable
             }
         }
 
-        // --- Section: GC pressure вне лока ---
+        // --- GC pressure вне лока ---
         if (evictedBytes > 0)
             GC.RemoveMemoryPressure(evictedBytes);
 

@@ -1,8 +1,6 @@
 using System.Diagnostics;
-using LMP.Core.Audio;
 using LMP.Core.Audio.Cache;
 using LMP.Core.Audio.Interfaces;
-using LMP.Core.Audio.Normalization;
 using LMP.Tests.Framework;
 
 namespace LMP.Tests.Unit;
@@ -130,7 +128,7 @@ public static class PreScanBenchmarks
         }
     }
 
-    // --- Section: Helpers ---
+    // --- Helpers ---
 
     private static List<(AudioCacheEntry Entry, string FilePath)> CollectCandidates(
      AudioCacheManager cacheManager)

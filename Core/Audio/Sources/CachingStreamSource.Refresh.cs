@@ -1,25 +1,25 @@
 using System.Net.Http.Headers;
 using LMP.Core.Audio.Http;
 using LMP.Core.Exceptions;
+using LMP.Core.Helpers;
 using LMP.Core.Youtube.Utils;
 
 namespace LMP.Core.Audio.Sources;
 
 public sealed partial class CachingStreamSource
 {
-    // --- Section: UrlRefreshOutcome ---
+    // --- UrlRefreshOutcome ---
 
     /// <summary>
     /// Результат попытки обновления stream URL.
     /// </summary>
     private enum UrlRefreshOutcome
     {
-        /// <summary>URL успешно обновлён, новый n-token отличается от старого.</summary>
+        /// <summary>URL успешно обновлён и готов к использованию.</summary>
         Success,
 
         /// <summary>
-        /// URL получен, но n-token не изменился — вероятно, session cache вернул старый manifest.
-        /// Retry с этим URL приведёт к повторному 403.
+        /// URL получен, но срок действия всё ещё истёк — session cache вернул старый manifest.
         /// </summary>
         StaleToken,
 
@@ -33,7 +33,31 @@ public sealed partial class CachingStreamSource
         CircuitOpen
     }
 
-    // --- Section: URL Refresh ---
+    // --- URL Freshness Check ---
+
+    /// <summary>
+    /// Проактивно проверяет срок жизни URL потока и обновляет его при необходимости до старта чтения.
+    /// </summary>
+    /// <param name="ct">Токен отмены.</param>
+    public async Task EnsureStreamFreshnessAsync(CancellationToken ct)
+    {
+        if (_disposed || IsFullyBuffered) return;
+
+        if (UrlEx.IsUrlExpiredOrExpiringSoon(_currentUrl, TimeSpan.FromMinutes(5)))
+        {
+            Log.Info($"[CachingSource] [{_trackId}] URL expiring soon on resume. Executing proactive refresh...");
+            try
+            {
+                await CoordinatedRefreshAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"[CachingSource] [{_trackId}] Proactive refresh on resume failed: {ex.Message}");
+            }
+        }
+    }
+
+    // --- URL Refresh ---
 
     /// <summary>
     /// Обновляет URL потока через <see cref="_urlRefresher"/> при истечении 403.
@@ -58,7 +82,7 @@ public sealed partial class CachingStreamSource
     }
 
     /// <summary>
-    /// Координирует обновление stream URL при получении HTTP 403.
+    /// Координирует обновление stream URL при получении HTTP 403 или обнаружении истёкшего TTL.
     /// </summary>
     /// <param name="ct">Токен отмены.</param>
     /// <returns>Исход попытки обновления URL.</returns>
@@ -187,13 +211,18 @@ public sealed partial class CachingStreamSource
             return UrlRefreshOutcome.NoChange;
         }
 
+        bool hasValidNewExpire = UrlEx.TryGetExpireUtc(urlAfterRefresh, out var expAfter)
+            && expAfter > DateTime.UtcNow.AddMinutes(5);
+
         bool nTokenChanged = !string.IsNullOrEmpty(nTokenAfter)
                             && !string.Equals(nTokenBefore, nTokenAfter, StringComparison.Ordinal);
 
-        if (!nTokenChanged && !string.IsNullOrEmpty(nTokenBefore))
+        // Если expire в будущем или n-token изменился — URL гарантированно валиден.
+        // StaleToken фиксируется ТОЛЬКО если новый URL пришёл с уже истёкшим/устаревшим expire.
+        if (!hasValidNewExpire && !nTokenChanged && !string.IsNullOrEmpty(nTokenBefore))
         {
             int failures = Interlocked.Increment(ref _consecutiveRefreshFailures);
-            Log.Warn($"[CachingSource] [{_trackId}] Refresh got new URL but n-token unchanged " +
+            Log.Warn($"[CachingSource] [{_trackId}] Refresh got URL with unchanged n-token and expired TTL " +
                     $"— likely stale session cache (failure {failures}/{MaxRefreshFailuresBeforeCircuitBreak})");
 
             await Task.Delay(_config.PostRefreshDelayMs, ct).ConfigureAwait(false);
@@ -204,13 +233,13 @@ public sealed partial class CachingStreamSource
         Volatile.Write(ref _consecutiveRefreshFailures, 0);
 
         Log.Info($"[CachingSource] [{_trackId}] URL refresh successful. " +
-                $"New n-token: {nTokenAfter?[..Math.Min(nTokenAfter.Length, 10)] ?? "?"}...");
+                $"New n-token: {nTokenAfter?[..Math.Min(nTokenAfter.Length, 10)] ?? "?"}..., expire={expAfter:O}");
 
         await Task.Delay(_config.PostRefreshDelayMs, ct).ConfigureAwait(false);
         return UrlRefreshOutcome.Success;
     }
 
-    // --- Section: EnsureUrlAvailable ---
+    // --- EnsureUrlAvailable ---
 
     /// <summary>
     /// Гарантирует наличие валидного continuation URL перед сетевой загрузкой.
@@ -314,7 +343,7 @@ public sealed partial class CachingStreamSource
         tcs?.TrySetResult(resolvedUrl);
     }
 
-    // --- Section: 403 Diagnostics ---
+    // --- 403 Diagnostics ---
 
     /// <summary>
     /// Логирует диагностические параметры 403-ответа: n-token, c-param, UA, тело ответа.
@@ -351,7 +380,7 @@ public sealed partial class CachingStreamSource
         Log.Warn("[CachingSource]══");
     }
 
-    // --- Section: HTTP Request Building ---
+    // --- HTTP Request Building ---
 
     /// <summary>
     /// Строит HTTP range-запрос с учётом хоста (YouTube vs generic CDN).

@@ -39,7 +39,7 @@ public sealed class BootstrapSettings
                 var settings = JsonSerializer.Deserialize(json, AppJsonContext.Default.BootstrapSettings);
                 if (settings != null)
                 {
-                    // ═══ ОЧИСТКА КЭША ПРИ ОБНОВЛЕНИИ ВЕРСИИ ПЛЕЕРА ═══
+                    // ОЧИСТКА КЭША ПРИ ОБНОВЛЕНИИ ВЕРСИИ ПЛЕЕРА
                     if (settings.LastRunVersion != G.Build.Version)
                     {
                         settings.AppUpdatedThisRun = true;
@@ -49,7 +49,7 @@ public sealed class BootstrapSettings
                         settings.Save();
                     }
 
-                    // ═══ ПРОВЕРКА ПЕРВОГО ЗАПУСКА ═══
+                    // ПРОВЕРКА ПЕРВОГО ЗАПУСКА
                     if (settings.IsFirstRun)
                     {
                         settings.LanguageCode = G.SystemInfo.DetectSystemLanguage();

@@ -1,17 +1,20 @@
 ﻿namespace LMP.Core.Helpers.Extensions;
 
 /// <summary>
-/// Предоставляет методы расширения для работы с сетевыми адресами <see cref="Uri"/>.
+/// Методы расширения для сетевых адресов <see cref="Uri"/>.
 /// </summary>
 internal static class UriExtensions
 {
     extension(Uri uri)
     {
         /// <summary>
-        /// Возвращает базовый домен URI (схему и хост) без выделения избыточной памяти.
-        /// Использует встроенный оптимизированный метод <see cref="Uri.GetLeftPart(UriPartial)"/>.
+        /// Возвращает базовый домен (схему и хост) через <see cref="UriPartial.Authority"/>.
         /// </summary>
-        /// <returns>Строка, содержащая схему и хост (например, "https://rr1---sn-u5gp-hhas.googlevideo.com").</returns>
-        public string Domain => uri.GetLeftPart(UriPartial.Authority);
+        /// <exception cref="ArgumentNullException">Если <paramref name="uri"/> равен null.</exception>
+        public string GetDomain()
+        {
+            ArgumentNullException.ThrowIfNull(uri);
+            return uri.GetLeftPart(UriPartial.Authority);
+        }
     }
 }

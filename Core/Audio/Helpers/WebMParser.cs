@@ -13,9 +13,9 @@ namespace LMP.Core.Audio.Helpers;
 /// </remarks>
 public sealed class WebMParser : IDisposable
 {
-    // ════════════════════════════════════════════════════════════════════
+    //
     // EBML & Matroska Element IDs
-    // ════════════════════════════════════════════════════════════════════
+    //
     private const uint EBML_ID = 0x1A45DFA3;
     private const uint SEGMENT_ID = 0x18538067;
     private const uint CLUSTER_ID = 0x1F43B675;
@@ -40,9 +40,9 @@ public sealed class WebMParser : IDisposable
     private const uint CUE_TRACK_POSITIONS_ID = 0xB7;
     private const uint CUE_CLUSTER_POSITION_ID = 0xF1;
 
-    // ════════════════════════════════════════════════════════════════════
+    //
     // Константы Lacing и EBML
-    // ════════════════════════════════════════════════════════════════════
+    //
     private const int LACING_NONE = 0;
     private const int LACING_XIPH = 1;
     private const int LACING_FIXED = 2;

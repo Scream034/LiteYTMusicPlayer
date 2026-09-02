@@ -73,7 +73,7 @@ public sealed class DominantColorService
     {
         byte[]? imageData = null;
 
-        // ═══ ЛОКАЛЬНЫЙ ФАЙЛ ═══
+        // ЛОКАЛЬНЫЙ ФАЙЛ
         if (IsLocalPath(imageUrl))
         {
             var localPath = ResolveLocalPath(imageUrl);
@@ -96,7 +96,7 @@ public sealed class DominantColorService
                 return null;
             }
         }
-        // ═══ HTTP/HTTPS URL ═══
+        // HTTP/HTTPS URL
         else
         {
             // Пробуем загрузить из disk-cache ImageCacheService

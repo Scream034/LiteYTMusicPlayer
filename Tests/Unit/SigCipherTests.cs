@@ -14,9 +14,9 @@ public static class SigCipherTests
     private const string MockPlayerScript = "var sts = 20650; signatureTimestamp: 20650;";
     private const string ExpectedSts = "20650";
 
-    // ══════════════════════════════════════════════════════════════════
+    // 
     // UNIT TESTS (no network)
-    // ══════════════════════════════════════════════════════════════════
+    // 
 
     /// <summary>
     /// Проверяет извлечение SignatureTimestamp (STS) из кода плеера.
@@ -30,9 +30,9 @@ public static class SigCipherTests
         return Task.CompletedTask;
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 
     // INTEGRATION TESTS (network required)
-    // ══════════════════════════════════════════════════════════════════
+    // 
 
     /// <summary>
     /// Дешифрует реальную подпись через production pipeline:

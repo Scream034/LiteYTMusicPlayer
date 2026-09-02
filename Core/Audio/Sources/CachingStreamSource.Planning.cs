@@ -2,14 +2,14 @@ namespace LMP.Core.Audio.Sources;
 
 public sealed partial class CachingStreamSource
 {
-    // --- Section: DownloadPlan ---
+    // --- DownloadPlan ---
 
     /// <summary>
     /// Результат планирования следующего HTTP range-запроса.
     /// </summary>
     private readonly record struct DownloadPlan(long Start, int Length);
 
-    // --- Section: Alignment Helpers ---
+    // --- Alignment Helpers ---
 
     /// <summary>Выравнивает <paramref name="value"/> вниз до кратного <paramref name="alignment"/>.</summary>
     private static long AlignDown(long value, int alignment) =>
@@ -29,7 +29,7 @@ public sealed partial class CachingStreamSource
         return remainder == 0 ? value : value + (alignment - remainder);
     }
 
-    // --- Section: Buffer Queries ---
+    // --- Buffer Queries ---
 
     /// <summary>
     /// Возвращает число непрерывных байт от <paramref name="position"/> вперёд
@@ -75,7 +75,7 @@ public sealed partial class CachingStreamSource
         return endExclusive - position;
     }
 
-    // --- Section: Availability Queries ---
+    // --- Availability Queries ---
 
     /// <summary>
     /// Проверяет, доступен ли диапазон локально (RAM или диск).
@@ -124,7 +124,7 @@ public sealed partial class CachingStreamSource
         return false;
     }
 
-    // --- Section: Read Length ---
+    // --- Read Length ---
 
     /// <summary>
     /// Возвращает выровненную длину чтения от <paramref name="position"/> до конца контента.
@@ -140,7 +140,7 @@ public sealed partial class CachingStreamSource
         return aligned;
     }
 
-    // --- Section: Coverage Trim ---
+    // --- Coverage Trim ---
 
     /// <summary>
     /// Обрезает планируемую длину загрузки до первого уже известного aligned coverage впереди.
@@ -178,7 +178,7 @@ public sealed partial class CachingStreamSource
         return length;
     }
 
-    // --- Section: Throttle ---
+    // --- Throttle ---
 
     /// <summary>
     /// Вычисляет целевую скорость загрузки для throttle-режима (байт/сек).
@@ -192,7 +192,7 @@ public sealed partial class CachingStreamSource
         return bitrateBytesPerSec * multiplier;
     }
 
-    // --- Section: MAPO Planner ---
+    // --- MAPO Planner ---
 
     /// <summary>
     /// Вычисляет оптимальный диапазон для следующего HTTP range-запроса (MAPO planner).

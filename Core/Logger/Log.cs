@@ -87,7 +87,7 @@ public static class Log
         _processor.Enqueue(new LogMessage(level, message, ex));
     }
 
-    // ═══ String overloads — для литералов и уже готовых строк ═══
+    // String overloads — для литералов и уже готовых строк
 
     /// <summary>Самый детальный уровень. Для трассировки потока выполнения.</summary>
     public static void Trace(string message) => Enqueue(LogLevel.Trace, message);
@@ -107,7 +107,7 @@ public static class Log
     /// <summary>Фатальные ошибки.</summary>
     public static void Fatal(string message, Exception? ex = null) => Enqueue(LogLevel.Fatal, message, ex);
 
-    // ═══ InterpolatedStringHandler overloads — zero-alloc при отключённом уровне ═══
+    // InterpolatedStringHandler overloads — zero-alloc при отключённом уровне
 
     /// <summary>Trace с zero-alloc интерполяцией.</summary>
     public static void Trace(TraceInterpolatedStringHandler handler)
@@ -151,7 +151,7 @@ public static class Log
     /// <summary>Перегрузка для объектов.</summary>
     public static void Debug(object? obj) => Debug(obj?.ToString() ?? "null");
 
-    // ═══ InterpolatedStringHandler per level ═══
+    // InterpolatedStringHandler per level
 
     /// <inheritdoc cref="LogInterpolatedStringHandlerBase"/>
     [InterpolatedStringHandler]

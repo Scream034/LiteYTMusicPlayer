@@ -61,7 +61,7 @@ internal static unsafe partial class QuickJsNative
             });
     }
 
-    // --- Section: Native P/Invoke imports ---
+    // --- Native P/Invoke imports ---
 
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -155,7 +155,7 @@ internal static unsafe partial class QuickJsNative
 
 #endif
 
-    // --- Section: Public managed API ---
+    // --- Public managed API ---
 
     /// <summary>
     /// Создаёт persistent QuickJS context, выполняя скрипт ровно один раз.
@@ -530,7 +530,7 @@ internal static unsafe partial class QuickJsNative
 
 #endif
 
-    // --- Section: Private helpers ---
+    // --- Private helpers ---
 
     private static string ExtractAbi()
     {

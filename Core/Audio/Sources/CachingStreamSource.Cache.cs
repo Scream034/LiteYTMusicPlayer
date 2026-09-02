@@ -4,7 +4,7 @@ namespace LMP.Core.Audio.Sources;
 
 public sealed partial class CachingStreamSource
 {
-    // --- Section: RamRangeBlock ---
+    // --- RamRangeBlock ---
 
     /// <summary>
     /// Иммутабельный блок данных в RAM-кэше, арендованный из <see cref="MemoryPool{T}"/>.
@@ -50,7 +50,7 @@ public sealed partial class CachingStreamSource
         }
     }
 
-    // --- Section: SlidingRamCache ---
+    // --- SlidingRamCache ---
 
     /// <summary>
     /// Потокобезопасный RAM-кэш диапазонов байт с скользящим окном вокруг текущей позиции.

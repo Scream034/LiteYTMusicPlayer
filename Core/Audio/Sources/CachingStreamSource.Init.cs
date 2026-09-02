@@ -5,7 +5,7 @@ namespace LMP.Core.Audio.Sources;
 
 public sealed partial class CachingStreamSource
 {
-    // --- Section: InitializeAsync ---
+    // --- InitializeAsync ---
 
     /// <inheritdoc/>
     public async ValueTask<bool> InitializeAsync(CancellationToken ct = default)
@@ -114,7 +114,7 @@ public sealed partial class CachingStreamSource
         }
     }
 
-    // --- Section: Startup Prefetch ---
+    // --- Startup Prefetch ---
 
     /// <summary>
     /// Запускает немедленный fire-and-forget prefetch после успешного parser init.
@@ -168,7 +168,7 @@ public sealed partial class CachingStreamSource
         }
     }
 
-    // --- Section: Bootstrap Check ---
+    // --- Bootstrap Check ---
 
     /// <summary>
     /// Проверяет, достаточно ли локально доступных данных от начала файла
@@ -188,7 +188,7 @@ public sealed partial class CachingStreamSource
         return contiguous >= initialBytes;
     }
 
-    // --- Section: Parser Factory ---
+    // --- Parser Factory ---
 
     /// <summary>Выбирает парсер контейнера на основе формата трека.</summary>
     private IContainerParser CreateParser(Stream stream) => _format switch

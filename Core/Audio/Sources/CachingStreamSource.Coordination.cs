@@ -4,7 +4,7 @@ namespace LMP.Core.Audio.Sources;
 
 public sealed partial class CachingStreamSource
 {
-    // --- Section: ActiveRangeDownload ---
+    // --- ActiveRangeDownload ---
 
     /// <summary>
     /// Дескриптор активной HTTP range-загрузки, используемый для дедупликации
@@ -41,7 +41,7 @@ public sealed partial class CachingStreamSource
         }
     }
 
-    // --- Section: Coordination Methods ---
+    // --- Coordination Methods ---
 
     /// <summary>
     /// Возвращает количество зарегистрированных активных загрузок.
@@ -134,7 +134,7 @@ public sealed partial class CachingStreamSource
         catch { }
     }
 
-    // --- Section: Helpers ---
+    // --- Helpers ---
 
     /// <summary>
     /// Определяет, является ли <see cref="HttpRequestException"/> следствием отмены

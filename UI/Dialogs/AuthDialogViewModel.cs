@@ -1,13 +1,9 @@
-using System.IO;
 using System.IO.Compression;
 using System.Reactive;
 using System.Reactive.Linq;
 using System.Text.Json;
 using Avalonia.Threading;
 using LMP.Core.Audio.Http;
-using LMP.Core.Services;
-using LMP.UI.Helpers;
-using LMP.UI.Services;
 using LMP.UI.Features.Shell;
 using ReactiveUI;
 

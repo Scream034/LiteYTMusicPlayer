@@ -1,11 +1,12 @@
 using System.Buffers;
 using LMP.Core.Exceptions;
+using LMP.Core.Helpers;
 
 namespace LMP.Core.Audio.Sources;
 
 public sealed partial class CachingStreamSource
 {
-    // --- Section: RangeDownloadResult ---
+    // --- RangeDownloadResult ---
 
     /// <summary>
     /// Исход попытки загрузки HTTP range-диапазона.
@@ -34,7 +35,7 @@ public sealed partial class CachingStreamSource
         OutOfRange
     }
 
-    // --- Section: Adaptive Metrics ---
+    // --- Adaptive Metrics ---
 
     /// <summary>
     /// Сохраняет замер RTT через скользящее окно из трёх значений.
@@ -117,7 +118,7 @@ public sealed partial class CachingStreamSource
             $"phase={(_bandwidthSampleCount <= _config.BandwidthBootstrapSampleCount ? "bootstrap" : "steady")})");
     }
 
-    // --- Section: ReadAtAsync ---
+    // --- ReadAtAsync ---
 
     /// <summary>
     /// Создаёт фатальное исключение для диапазона, который source не смог получить
@@ -314,7 +315,7 @@ public sealed partial class CachingStreamSource
         return available;
     }
 
-    // --- Section: EnsureRangeAsync ---
+    // --- EnsureRangeAsync ---
 
     /// <summary>
     /// Гарантирует наличие диапазона данных, предотвращая бесконечные ретраи (Retry Storm).
@@ -323,6 +324,10 @@ public sealed partial class CachingStreamSource
     /// quadratic backoff; при fatal — пробрасывает <see cref="ChunkDownloadFatalException"/>.
     /// </para>
     /// </summary>
+    /// <param name="position">Позиция начала диапазона.</param>
+    /// <param name="minimumLength">Минимально необходимая длина.</param>
+    /// <param name="ct">Токен отмены.</param>
+    /// <param name="isCritical">Приоритет: критический (для воспроизведения) или фоновый (preload).</param>
     private async Task<RangeDownloadResult> EnsureRangeAsync(
         long position,
         int minimumLength,
@@ -341,6 +346,17 @@ public sealed partial class CachingStreamSource
             return RangeDownloadResult.Success;
 
         ct.ThrowIfCancellationRequested();
+
+        // Проактивная проверка: если URL протух, обновляем его ДО отправки HTTP-запроса
+        if (UrlEx.IsUrlExpiredOrExpiringSoon(_currentUrl, TimeSpan.FromMinutes(5)))
+        {
+            Log.Info($"[CachingSource] [{_trackId}] URL expired/expiring soon. Proactive refresh before request...");
+            var proactiveOutcome = await CoordinatedRefreshAsync(ct).ConfigureAwait(false);
+            if (proactiveOutcome == UrlRefreshOutcome.Success)
+            {
+                Log.Info($"[CachingSource] [{_trackId}] Proactive refresh succeeded before range {position}");
+            }
+        }
 
         // Source-level circuit breaker: не входим в retry loop если breaker открыт.
         if (IsSourceCircuitBreakerOpen(out int cbRemainingMs))
@@ -390,7 +406,7 @@ public sealed partial class CachingStreamSource
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                // Epoch сменился (seek отменил старые загрузки) — нормальный transient.
+                // Epoch сменился (seek/refresh отменил старые загрузки) — нормальный transient.
                 continue;
             }
             finally
@@ -434,7 +450,9 @@ public sealed partial class CachingStreamSource
                         {
                             case UrlRefreshOutcome.Success:
                                 consecutiveStaleRefreshes = 0;
-                                Log.Info($"[CachingSource] [{_trackId}] URL refreshed, retrying range {plan.Start}");
+                                chunkIoExceptions = 0;
+                                attempt = -1; // Сбрасываем попытки: на новом URL даём полный бюджет ретраев
+                                Log.Info($"[CachingSource] [{_trackId}] URL refreshed, retrying range {plan.Start} with fresh budget");
                                 continue;
 
                             case UrlRefreshOutcome.StaleToken:
@@ -498,7 +516,7 @@ public sealed partial class CachingStreamSource
         return RangeDownloadResult.NetworkError;
     }
 
-    // --- Section: Source Circuit Breaker ---
+    // --- Source Circuit Breaker ---
 
     /// <summary>
     /// Проверяет, открыт ли source-level circuit breaker.
@@ -575,7 +593,7 @@ public sealed partial class CachingStreamSource
         }
     }
 
-    // --- Section: DownloadRangeCoreAsync ---
+    // --- DownloadRangeCoreAsync ---
 
     /// <summary>
     /// Оркестрирует загрузку диапазона: circuit breaker → слот семафора → URL guard → HTTP.
@@ -676,7 +694,7 @@ public sealed partial class CachingStreamSource
         return TrimLengthToFirstKnownCoverage(start, actualLength, includeInflight: false);
     }
 
-    // --- Section: DownloadRangeHttpAsync ---
+    // --- DownloadRangeHttpAsync ---
 
     /// <summary>
     /// Выполняет HTTP range-запрос, записывает данные в RAM и на диск.
@@ -932,7 +950,7 @@ public sealed partial class CachingStreamSource
         }
     }
 
-    // --- Section: Network Retry Helpers ---
+    // --- Network Retry Helpers ---
 
     /// <summary>
     /// Capped exponential backoff для transient network retry.

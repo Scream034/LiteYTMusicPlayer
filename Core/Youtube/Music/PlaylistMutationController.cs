@@ -363,7 +363,7 @@ internal sealed class PlaylistMutationController(HttpClient http)
 
         try
         {
-            // ═══ STEP 1: Initiate upload session ═══
+            // STEP 1: Initiate upload session
             var initiateUrl = "https://music.youtube.com/playlist_image_upload/playlist_custom_thumbnail";
 
             using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, initiateUrl);
@@ -390,7 +390,7 @@ internal sealed class PlaylistMutationController(HttpClient http)
             var uploadUrl = uploadUrls.First();
             Log.Debug($"[Scotty] Got upload URL: {uploadUrl[..Math.Min(100, uploadUrl.Length)]}...");
 
-            // ═══ STEP 2: Upload binary data ═══
+            // STEP 2: Upload binary data
             using var uploadRequest = new HttpRequestMessage(HttpMethod.Post, uploadUrl);
 
             uploadRequest.Headers.Add("X-Goog-Upload-Offset", "0");
@@ -419,7 +419,7 @@ internal sealed class PlaylistMutationController(HttpClient http)
 
             Log.Debug($"[Scotty] Got blobId: {blobId[..Math.Min(50, blobId.Length)]}...");
 
-            // ═══ STEP 3: Apply thumbnail via edit_playlist API ═══
+            // STEP 3: Apply thumbnail via edit_playlist API
             var applyRoot = await PostAsync("browse/edit_playlist?prettyPrint=false", writer =>
             {
                 writer.WriteString("playlistId", SanitizePlaylistId(playlistId));

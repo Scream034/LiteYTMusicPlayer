@@ -1,9 +1,5 @@
-using System;
 using System.Reactive;
-using System.Reactive.Linq;
 using Avalonia.Threading;
-using LMP.Core.Services;
-using LMP.UI.Features.Shell;
 using ReactiveUI;
 
 

@@ -33,10 +33,10 @@ internal static class UrlEx
             // url = [prefix][old_value][suffix]
             //        ^0..valueStart    ^valueEnd..
             // Заменяем old_value на encodedValue, всё остальное — побитово копируем.
-            
+
             int newLength = valueStart + encodedValue.Length + (url.Length - valueEnd);
-            
-            return string.Create(newLength, (url, valueStart, valueEnd, encodedValue), 
+
+            return string.Create(newLength, (url, valueStart, valueEnd, encodedValue),
                 static (span, state) =>
             {
                 var (originalUrl, valStart, valEnd, newVal) = state;
@@ -58,9 +58,9 @@ internal static class UrlEx
         // APPEND — параметра нет, добавляем в конец
         var separator = urlSpan.Contains('?') ? '&' : '?';
         var encodedKey = Uri.EscapeDataString(key);
-        
+
         int appendLength = url.Length + 1 + encodedKey.Length + 1 + encodedValue.Length;
-        
+
         return string.Create(appendLength, (url, separator, encodedKey, encodedValue),
             static (span, state) =>
         {
@@ -128,12 +128,12 @@ internal static class UrlEx
         if (newLength <= 0)
             return url[..Math.Max(0, removeStart)];
 
-        return string.Create(newLength, (url, removeStart, removeEnd), 
+        return string.Create(newLength, (url, removeStart, removeEnd),
             static (span, state) =>
         {
             var (originalUrl, rStart, rEnd) = state;
             var src = originalUrl.AsSpan();
-            
+
             src[..rStart].CopyTo(span);
             src[rEnd..].CopyTo(span[rStart..]);
         });
@@ -154,12 +154,49 @@ internal static class UrlEx
             return null;
 
         var rawValue = urlSpan[valueStart..valueEnd];
-        
+
         // Если значение содержит %XX — декодируем, иначе возвращаем как есть
         if (rawValue.Contains('%'))
             return Uri.UnescapeDataString(rawValue.ToString());
 
         return rawValue.ToString();
+    }
+
+    /// <summary>
+    /// Извлекает время истечения срока действия URL из параметра &amp;expire= (UTC).
+    /// </summary>
+    /// <param name="url">URL для проверки.</param>
+    /// <param name="expireUtc">Распарсенное время в UTC.</param>
+    /// <returns><c>true</c>, если параметр найден и корректно распарсен; иначе <c>false</c>.</returns>
+    public static bool TryGetExpireUtc(string url, out DateTime expireUtc)
+    {
+        var expireStr = TryGetQueryParameterValue(url, "expire");
+        if (expireStr is not null && long.TryParse(expireStr, out var unixSeconds))
+        {
+            expireUtc = DateTimeOffset.FromUnixTimeSeconds(unixSeconds).UtcDateTime;
+            return true;
+        }
+
+        expireUtc = DateTime.MaxValue;
+        return false;
+    }
+
+    /// <summary>
+    /// Проверяет, истёк ли срок действия URL или истекает ли он в ближайшее время.
+    /// </summary>
+    /// <param name="url">URL для проверки.</param>
+    /// <param name="safetyMargin">Запас времени до фактического истечения (по умолчанию 5 минут).</param>
+    /// <returns><c>true</c>, если URL протух или скоро протухнет; <c>false</c> если ссылка ещё валидна или expire отсутствует.</returns>
+    public static bool IsUrlExpiredOrExpiringSoon(string url, TimeSpan? safetyMargin = null)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return true;
+
+        if (!TryGetExpireUtc(url, out var expireUtc))
+            return false;
+
+        var margin = safetyMargin ?? TimeSpan.FromMinutes(5);
+        return DateTime.UtcNow.Add(margin) >= expireUtc;
     }
 
     public static bool ContainsQueryParameter(string url, string key)
@@ -194,18 +231,18 @@ internal static class UrlEx
                 {
                     var rawKey = segment[..eqPos];
                     var rawVal = segment[(eqPos + 1)..];
-                    
-                    paramKey = rawKey.Contains('%') 
-                        ? Uri.UnescapeDataString(rawKey.ToString()) 
+
+                    paramKey = rawKey.Contains('%')
+                        ? Uri.UnescapeDataString(rawKey.ToString())
                         : rawKey.ToString();
-                    paramValue = rawVal.Contains('%') 
-                        ? Uri.UnescapeDataString(rawVal.ToString()) 
+                    paramValue = rawVal.Contains('%')
+                        ? Uri.UnescapeDataString(rawVal.ToString())
                         : rawVal.ToString();
                 }
                 else
                 {
-                    paramKey = segment.Contains('%') 
-                        ? Uri.UnescapeDataString(segment.ToString()) 
+                    paramKey = segment.Contains('%')
+                        ? Uri.UnescapeDataString(segment.ToString())
                         : segment.ToString();
                     paramValue = "";
                 }
@@ -253,7 +290,7 @@ internal static class UrlEx
             if (eqPos >= 0)
             {
                 var paramKey = segment[..eqPos];
-                
+
                 // Точное сравнение ключа (case-sensitive, как YouTube и требует)
                 if (paramKey.SequenceEqual(keySpan))
                 {

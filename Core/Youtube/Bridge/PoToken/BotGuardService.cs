@@ -188,9 +188,9 @@ public sealed class BotGuardService : IDisposable
         string identifier,
         CancellationToken ct)
     {
-        // ══════════════════════════════════════════════════════════════════
+        //
         // Шаг 3a: staged context initialization
-        // ══════════════════════════════════════════════════════════════════
+        //
         if (_handle == IntPtr.Zero)
         {
             Log.Debug("[BotGuardService] Step 3a: Creating empty QuickJS context...");
@@ -206,9 +206,9 @@ public sealed class BotGuardService : IDisposable
             DumpDiagnosticConsole("post-load");
         }
 
-        // ══════════════════════════════════════════════════════════════════
+        //
         // Шаг 3b: Async snapshot
-        // ══════════════════════════════════════════════════════════════════
+        //
         Log.Debug("[BotGuardService] Step 3b: Getting BotGuard snapshot (async)...");
 
 #if DEBUG
@@ -229,9 +229,9 @@ public sealed class BotGuardService : IDisposable
 
         Log.Debug($"[BotGuardService] Snapshot OK ({snapshot.Length} chars)");
 
-        // ══════════════════════════════════════════════════════════════════
+        //
         // Post-snapshot pump
-        // ══════════════════════════════════════════════════════════════════
+        //
         Log.Debug("[BotGuardService] Post-snapshot pump (waiting for webPoSignalOutput)...");
 
         var postPumped = await Task.Run(
@@ -265,9 +265,9 @@ public sealed class BotGuardService : IDisposable
 #endif
         }
 
-        // ══════════════════════════════════════════════════════════════════
+        //
         // Шаг 4: IntegrityToken
-        // ══════════════════════════════════════════════════════════════════
+        //
         Log.Debug("[BotGuardService] Step 4: Fetching IntegrityToken...");
 
         var integrityData = await WaaClient.GenerateIntegrityTokenAsync(
@@ -283,9 +283,9 @@ public sealed class BotGuardService : IDisposable
 
         Log.Debug($"[BotGuardService] IntegrityToken OK (TTL={integrityData.EstimatedTtlSecs}s, isFallback={integrityData.IsFallbackToken})");
 
-        // ══════════════════════════════════════════════════════════════════
+        //
         // Шаг 5a: Activate token
-        // ══════════════════════════════════════════════════════════════════
+        //
         Log.Debug("[BotGuardService] Step 5a: Activating IntegrityToken...");
 
         var activateResult = Common.QuickJsNative.Eval(
@@ -311,9 +311,9 @@ public sealed class BotGuardService : IDisposable
             () => Common.QuickJsNative.PumpEventLoop(_handle, 1_000), ct)
             .ConfigureAwait(false);
 
-        // ══════════════════════════════════════════════════════════════════
+        //
         // Шаг 5b: Mint
-        // ══════════════════════════════════════════════════════════════════
+        //
         Log.Debug("[BotGuardService] Step 5b: Minting PoToken...");
 
 #if DEBUG

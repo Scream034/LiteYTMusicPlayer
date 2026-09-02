@@ -5,6 +5,7 @@ using LMP.Core.Audio.Http;
 using LMP.Core.Youtube.Videos;
 using LMP.Core.Youtube.Videos.Streams;
 using LMP.Tests.Framework;
+using LMP.Core.Helpers.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace LMP.Tests.Integration;
@@ -17,9 +18,9 @@ public static class StreamPipelineTests
 {
     private static string[] TestVideoIds => TestConfig.Get().Pipeline.TestVideoIds;
 
-    // ══════════════════════════════════════════════════════════════════
+    // 
     // STREAM RESOLUTION
-    // ══════════════════════════════════════════════════════════════════
+    // 
 
     /// <summary>
     /// Тестирует получение manifest и скачивание первого килобайта данных для верификации обхода шифрования.
@@ -114,9 +115,9 @@ public static class StreamPipelineTests
         Log.Info($"[Test] Multi-video: {success}/{TestVideoIds.Length} passed");
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 
     // AUDIO DOWNLOAD
-    // ══════════════════════════════════════════════════════════════════
+    // 
 
     /// <summary>
     /// Тестирует скачивание первых 64KB audio-данных и проверку формата.
@@ -157,9 +158,9 @@ public static class StreamPipelineTests
         Log.Info($"[Test] Downloaded {buffer.Length} bytes, format: {(isWebM ? "WebM/Opus" : "MP4/AAC")}");
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 
     // FULL PIPELINE
-    // ══════════════════════════════════════════════════════════════════
+    // 
 
     /// <summary>
     /// Полный end-to-end тест: manifest + sig decryption + n-token + URL validation.
@@ -230,10 +231,10 @@ public static class StreamPipelineTests
 
         var youtube = services.GetRequiredService<Lazy<YoutubeProvider>>().Value.GetClient();
 
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
         Log.Info($"  DEBUG STREAM: {videoId}");
         Log.Info($"  Target itag: {targetItag?.ToString() ?? "any"}");
-        Log.Info("═══════════════════════════════════════════════════════════════\n");
+        Log.Info("\n");
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
@@ -284,9 +285,9 @@ public static class StreamPipelineTests
             await TestStreamDownloadAsync(stream.Url, cts.Token);
         }
 
-        Log.Info("\n═══════════════════════════════════════════════════════════════");
+        Log.Info("\n");
         Log.Info("  DEBUG COMPLETE");
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
     }
 
     [TestMethod(TestCategory.Integration, "Pipeline: Phase 3 - Raw URL from PlayerResponse",
@@ -297,7 +298,7 @@ public static class StreamPipelineTests
 
         var videoId = TestConfig.Get().Pipeline.DebugVideoId;
 
-        Log.Info("═══ PHASE 3: ТЕСТИРУЕМ RAW URL ДО И ПОСЛЕ ОБРАБОТКИ ═══\n");
+        Log.Info(" PHASE 3: ТЕСТИРУЕМ RAW URL ДО И ПОСЛЕ ОБРАБОТКИ \n");
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
@@ -420,7 +421,7 @@ public static class StreamPipelineTests
             Log.Error($"  Pipeline failed: {ex.Message}");
         }
 
-        Log.Info("\n═══ PHASE 3 ЗАВЕРШЕНА ═══");
+        Log.Info("\n PHASE 3 ЗАВЕРШЕНА ");
     }
 
     private static void CompareUrls(string rawUrl, string processedUrl)
@@ -581,7 +582,7 @@ public static class StreamPipelineTests
 
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
-                Log.Error("\n  ═══ 403 FORBIDDEN ANALYSIS ═══");
+                Log.Error("\n   403 FORBIDDEN ANALYSIS ");
             }
         }
     }

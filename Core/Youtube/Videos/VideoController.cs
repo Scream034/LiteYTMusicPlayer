@@ -457,7 +457,7 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
             {
                 if (ex.Reason == LoginRequiredReason.BotDetection)
                 {
-                    // --- Section: ANDROID_VR BotDetection Tracking ---
+                    // --- ANDROID_VR BotDetection Tracking ---
                     if (string.Equals(clientName, "ANDROID_VR", StringComparison.Ordinal))
                         Interlocked.Increment(ref _androidVrSessionBotDetections);
 

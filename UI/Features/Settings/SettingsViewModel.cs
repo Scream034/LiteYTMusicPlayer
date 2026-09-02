@@ -2,7 +2,6 @@ using System.Collections.ObjectModel;
 using System.Net;
 using System.Reactive;
 using System.Reactive.Linq;
-using Avalonia;
 using Avalonia.Media;
 using Avalonia.Threading;
 using LMP.Core.Audio.Cache;

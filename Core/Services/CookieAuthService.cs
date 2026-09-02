@@ -704,7 +704,7 @@ public partial class CookieAuthService
         _cachedHeaderString = sb.ToString();
     }
 
-    // --- Section: Non-blocking Save ---
+    // --- Non-blocking Save ---
 
     /// <summary>
     /// Сериализует профиль синхронно (CPU-bound, ~0.1 мс),

@@ -30,7 +30,7 @@ public static class CdnDiagnosticTests
     private static List<CdnHostSnapshot>? _networkBaseline;
     private static string? _baselineOutboundIp;
 
-    // --- Section: Known CDN IPs ---
+    // --- Known CDN IPs ---
 
     /// <summary>
     /// Известные IP-адреса Google CDN из предыдущих сессий.
@@ -48,7 +48,7 @@ public static class CdnDiagnosticTests
         ("rr4---sn-4g5lznlz.googlevideo.com", "74.125.104.73"),    // Blocked
     ];
 
-    // --- Section: TCP Connectivity ---
+    // --- TCP Connectivity ---
 
     /// <summary>
     /// Тестирует raw TCP-подключение к порту 443 каждого известного CDN IP.
@@ -61,9 +61,9 @@ public static class CdnDiagnosticTests
         int reachable = 0;
         int blocked = 0;
 
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
         Log.Info("  CDN TCP CONNECTIVITY (raw TCP, no TLS, no HTTP)");
-        Log.Info("═══════════════════════════════════════════════════════════════\n");
+        Log.Info("\n");
 
         foreach (var (host, ip) in KnownCdnEndpoints)
         {
@@ -100,13 +100,13 @@ public static class CdnDiagnosticTests
         }
 
         Log.Info($"\n  Result: {reachable} reachable, {blocked} blocked/timeout");
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
 
         if (reachable == 0)
             throw new Exception("All CDN IPs are unreachable via TCP — network/firewall issue");
     }
 
-    // --- Section: Path Discrimination ---
+    // --- Path Discrimination ---
 
     /// <summary>
     /// Тестирует разницу в поведении ТСПУ между путями <c>/generate_204</c>
@@ -117,9 +117,9 @@ public static class CdnDiagnosticTests
         Order = 20, Group = "CdnDiagnostic", RequiresNetwork = true, TimeoutSeconds = 120)]
     public static async Task TestPathDiscriminationAsync(IServiceProvider services)
     {
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
         Log.Info("  CDN PATH DISCRIMINATION: /generate_204 vs /videoplayback");
-        Log.Info("═══════════════════════════════════════════════════════════════\n");
+        Log.Info("\n");
 
         var youtube = services.GetRequiredService<Lazy<YoutubeProvider>>().Value.GetClient();
         var videoId = TestConfig.Get().Pipeline.DebugVideoId;
@@ -164,16 +164,16 @@ public static class CdnDiagnosticTests
             audioStream.Url,
             range: (65536, 131071));
 
-        Log.Info("\n═══════════════════════════════════════════════════════════════");
+        Log.Info("\n");
         Log.Info("  INTERPRETATION:");
         Log.Info("  A=✅ B=❌ C=❌ → ТСПУ blocks /videoplayback path");
         Log.Info("  A=✅ B=❌ C=✅ → ТСПУ blocks only Range: bytes=0-N (start of stream)");
         Log.Info("  A=✅ B=✅ C=✅ → Zapret is working correctly");
         Log.Info("  A=❌ B=❌ C=❌ → Full block on this CDN host");
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
     }
 
-    // --- Section: Zapret Coverage ---
+    // --- Zapret Coverage ---
 
     /// <summary>
     /// Проверяет покрытие Google CDN IP-диапазонов через запрос к каждому из них
@@ -184,9 +184,9 @@ public static class CdnDiagnosticTests
         Order = 30, Group = "CdnDiagnostic", RequiresNetwork = true, TimeoutSeconds = 120)]
     public static async Task TestZapretCoverageAsync(IServiceProvider _)
     {
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
         Log.Info("  ZAPRET COVERAGE: /generate_204 per known CDN IP");
-        Log.Info("═══════════════════════════════════════════════════════════════\n");
+        Log.Info("\n");
 
         Log.Info($"  {"IP",-20} {"Subnet",-18} {"204",-6} {"Latency",-10} Host");
         Log.Info($"  {new string('-', 80)}");
@@ -245,10 +245,10 @@ public static class CdnDiagnosticTests
         Log.Info("  173.194.x.x  → Google CDN AS15169");
         Log.Info("  172.217.x.x  → Google Fiber / YouTube AS15169");
         Log.Info("  37.79.x.x    → Google CDN Europe");
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
     }
 
-    // --- Section: Live CDN from Fresh Manifest ---
+    // --- Live CDN from Fresh Manifest ---
 
     /// <summary>
     /// Получает свежий манифест, извлекает текущий CDN-хост и тестирует
@@ -259,9 +259,9 @@ public static class CdnDiagnosticTests
         Order = 40, Group = "CdnDiagnostic", RequiresNetwork = true, TimeoutSeconds = 90)]
     public static async Task TestLiveFullChainAsync(IServiceProvider services)
     {
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
         Log.Info("  LIVE FULL CHAIN: DNS → TCP → TLS → 204 → videoplayback");
-        Log.Info("═══════════════════════════════════════════════════════════════\n");
+        Log.Info("\n");
 
         var youtube = services.GetRequiredService<Lazy<YoutubeProvider>>().Value.GetClient();
         var videoId = TestConfig.Get().Pipeline.DebugVideoId;
@@ -341,15 +341,15 @@ public static class CdnDiagnosticTests
             Log.Error($"      ❌ {sw.ElapsedMilliseconds}ms — {FormatException(ex)}");
         }
 
-        Log.Info("\n═══════════════════════════════════════════════════════════════");
+        Log.Info("\n");
         Log.Info("  DIAGNOSIS:");
         Log.Info("  [3]=✅ [4]=❌ → ТСПУ drops /videoplayback. Fix: zapret winws.cmd rules");
         Log.Info("  [3]=❌ [4]=❌ → Full IP block. Fix: add to ipset-all.txt, restart zapret");
         Log.Info("  [3]=✅ [4]=✅ → CDN working correctly");
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
     }
 
-    // --- Section: Zapret Config Check ---
+    // --- Zapret Config Check ---
 
     /// <summary>
     /// Читает файлы конфигурации zapret и проверяет наличие необходимых
@@ -371,7 +371,7 @@ public static class CdnDiagnosticTests
             "64.233.160.0/19",
         };
 
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
         Log.Info("  ZAPRET CONFIG AUDIT");
         Log.Info($"  Base path: {zapretBase}\n");
 
@@ -388,7 +388,7 @@ public static class CdnDiagnosticTests
         Log.Info("  1. Add missing subnets to ipset-all.txt");
         Log.Info("  2. Restart zapret: run service_install_*.cmd as Administrator");
         Log.Info("  3. Verify winws.cmd has rules for *.googlevideo.com");
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
 
         return Task.CompletedTask;
     }
@@ -400,7 +400,7 @@ public static class CdnDiagnosticTests
         const string host = "rr4---sn-4g5lznlz.googlevideo.com";
         const string ip = "74.125.104.73";
 
-        Log.Info($"═══ DIRECT TEST: {host} ({ip}) ═══\n");
+        Log.Info($" DIRECT TEST: {host} ({ip}) \n");
 
         // Берём URL трека из кэша или свежий manifest
         var youtube = services.GetRequiredService<Lazy<YoutubeProvider>>().Value.GetClient();
@@ -424,10 +424,10 @@ public static class CdnDiagnosticTests
         Log.Info("\n  [C] /videoplayback bytes=65536-131071 ...");
         await RunPathTestAsync(stream.Url, "videoplayback 65536-131071", stream.Url, range: (65536, 131071));
 
-        Log.Info("\n═══════════════════════════════════════════════════════════════");
+        Log.Info("\n");
     }
 
-    // --- Section: Multi-Manifest CDN Discovery ---
+    // --- Multi-Manifest CDN Discovery ---
 
     /// <summary>
     /// Запрашивает манифест несколько раз (YouTube ротирует CDN-хосты между запросами),
@@ -444,10 +444,10 @@ public static class CdnDiagnosticTests
     {
         const int interRequestDelayMs = 2000;
 
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
         Log.Info("  MULTI-MANIFEST CDN DISCOVERY + MEDIA PROBE");
         Log.Info("  Multiple videos for CDN diversity");
-        Log.Info("═══════════════════════════════════════════════════════════════\n");
+        Log.Info("\n");
 
         var youtube = services.GetRequiredService<Lazy<YoutubeProvider>>().Value.GetClient();
         var config = TestConfig.Get();
@@ -521,7 +521,7 @@ public static class CdnDiagnosticTests
                 $"{result.MediaMs + "ms",-10} {diagnosis}");
         }
 
-        Log.Info($"\n  ═══ SUMMARY ═══");
+        Log.Info($"\n   SUMMARY ");
         Log.Info($"  Available:    {available}/{hostToUrl.Count}");
         Log.Info($"  ТСПУ blocked: {tspuBlocked}/{hostToUrl.Count}");
         Log.Info($"  Full blocked: {fullBlocked}/{hostToUrl.Count}");
@@ -534,7 +534,7 @@ public static class CdnDiagnosticTests
         else
             Log.Info("  ✅ All hosts available — no blocking detected");
 
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
 
         if (available == 0)
             throw new Exception(
@@ -542,7 +542,7 @@ public static class CdnDiagnosticTests
                 "Zapret is not effective for this provider/network.");
     }
 
-    // --- Section: Network Transition Comparison ---
+    // --- Network Transition Comparison ---
 
     /// <summary>
     /// Двухфазный тест для сравнения CDN-доступности при смене сети.
@@ -564,14 +564,14 @@ public static class CdnDiagnosticTests
         bool isBaseline = _networkBaseline == null;
         string outboundIp = GetCurrentOutboundIp();
 
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
         Log.Info(isBaseline
             ? "  NETWORK BASELINE (Phase 1 — save current state)"
             : "  NETWORK COMPARISON (Phase 2 — diff with baseline)");
         Log.Info($"  Outbound IP: {outboundIp}");
         if (!isBaseline)
             Log.Info($"  Baseline IP: {_baselineOutboundIp}");
-        Log.Info("═══════════════════════════════════════════════════════════════\n");
+        Log.Info("\n");
 
         if (!isBaseline && outboundIp == _baselineOutboundIp)
             Log.Warn("  ⚠ Outbound IP unchanged — did you switch networks?\n");
@@ -630,7 +630,7 @@ public static class CdnDiagnosticTests
         // Diff
         if (!isBaseline && _networkBaseline != null)
         {
-            Log.Info($"\n  ═══ DIFF (baseline → current) ═══");
+            Log.Info($"\n   DIFF (baseline → current) ");
 
             var baselineByHost = _networkBaseline.ToDictionary(
                 s => s.Host, StringComparer.OrdinalIgnoreCase);
@@ -690,10 +690,10 @@ public static class CdnDiagnosticTests
             Log.Info("     Reset baseline: restart the app or run a different CDN test first.");
         }
 
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
     }
 
-    // --- Section: Active Stream Probe ---
+    // --- Active Stream Probe ---
 
     /// <summary>
     /// Берёт URL текущего воспроизводимого трека из <see cref="SessionCacheStore"/>
@@ -706,9 +706,9 @@ public static class CdnDiagnosticTests
         Order = 55, Group = "CdnDiagnostic", RequiresNetwork = true, TimeoutSeconds = 30)]
     public static async Task TestActiveStreamProbeAsync()
     {
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
         Log.Info("  ACTIVE STREAM MEDIA PROBE");
-        Log.Info("═══════════════════════════════════════════════════════════════\n");
+        Log.Info("\n");
 
         // Пытаемся получить URL из session cache (последний известный manifest)
         var allManifests = SessionCacheStore.GetAllCachedTrackIds();
@@ -765,13 +765,13 @@ public static class CdnDiagnosticTests
             Log.Warn("  → Current playback will fail. Network switch or zapret reconfiguration needed.");
         }
 
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
 
         if (probed == 0)
             throw new Exception("No valid stream URLs found in session cache");
     }
 
-    // --- Section: Blacklist Unit Test ---
+    // --- Blacklist Unit Test ---
 
     /// <summary>
     /// Проверяет корректность <see cref="CdnBlacklist"/>: add, check, TTL expiry, URL filtering.
@@ -780,9 +780,9 @@ public static class CdnDiagnosticTests
         Order = 6, Group = "CdnDiagnostic", RequiresNetwork = false, TimeoutSeconds = 5)]
     public static async Task TestBlacklistLogicAsync(IServiceProvider _)
     {
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
         Log.Info("  CDN BLACKLIST UNIT TEST");
-        Log.Info("═══════════════════════════════════════════════════════════════\n");
+        Log.Info("\n");
 
         // --- Add & check ---
         var blacklist = new CdnBlacklist(ttl: TimeSpan.FromMilliseconds(300));
@@ -833,10 +833,10 @@ public static class CdnDiagnosticTests
         Log.Info("  ✅ Clear");
 
         Log.Info("\n  All blacklist tests passed.");
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
     }
 
-    // --- Section: DNS Resolution Diagnostic ---
+    // --- DNS Resolution Diagnostic ---
 
     /// <summary>
     /// Тестирует DNS resolution для ключевых YouTube-доменов через системный DNS
@@ -850,10 +850,10 @@ public static class CdnDiagnosticTests
         Order = 3, Group = "CdnDiagnostic", RequiresNetwork = true, TimeoutSeconds = 30)]
     public static async Task TestDnsResolutionAsync()
     {
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
         Log.Info("  DNS RESOLUTION DIAGNOSTIC");
         Log.Info($"  Outbound IP: {GetCurrentOutboundIp()}");
-        Log.Info("═══════════════════════════════════════════════════════════════\n");
+        Log.Info("\n");
 
         var domains = new[]
         {
@@ -969,7 +969,7 @@ public static class CdnDiagnosticTests
         }
 
         // Диагноз
-        Log.Info($"\n  ═══ DIAGNOSIS ═══");
+        Log.Info($"\n   DIAGNOSIS ");
         Log.Info($"  System DNS:  {resolved} resolved, {failed} failed");
 
         if (youtubeBlocked && cdnOk)
@@ -993,7 +993,7 @@ public static class CdnDiagnosticTests
             Log.Info("  ✅ All domains resolve — DNS is not the problem");
         }
 
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
 
         if (youtubeBlocked)
             throw new Exception(
@@ -1155,7 +1155,7 @@ public static class CdnDiagnosticTests
         return -1; // overflow
     }
 
-    // --- Section: Alternative API Endpoint ---
+    // --- Alternative API Endpoint ---
 
     /// <summary>
     /// Проверяет доступность альтернативного YouTube API endpoint через googleapis.com.
@@ -1165,10 +1165,10 @@ public static class CdnDiagnosticTests
         Order = 4, Group = "CdnDiagnostic", RequiresNetwork = true, TimeoutSeconds = 30)]
     public static async Task TestAlternativeApiEndpointAsync()
     {
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
         Log.Info("  ALTERNATIVE API ENDPOINT TEST");
         Log.Info($"  Outbound IP: {GetCurrentOutboundIp()}");
-        Log.Info("═══════════════════════════════════════════════════════════════\n");
+        Log.Info("\n");
 
         var endpoints = new (string Host, string Path, string Label)[]
         {
@@ -1305,14 +1305,14 @@ public static class CdnDiagnosticTests
             }
         }
 
-        Log.Info($"\n  ═══ INTERPRETATION ═══");
+        Log.Info($"\n   INTERPRETATION ");
         Log.Info("  www.youtube.com     TLS=❌ → ТСПУ blocks SNI 'youtube.com'");
         Log.Info("  googleapis.com      TLS=✅ → ТСПУ does NOT block this SNI");
         Log.Info("  → Solution: route InnerTube API through youtubei.googleapis.com");
-        Log.Info("═══════════════════════════════════════════════════════════════");
+        Log.Info("");
     }
 
-    // --- Section: Private Helpers ---
+    // --- Private Helpers ---
 
     private static async Task RunPathTestAsync(
      string url,

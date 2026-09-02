@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace LMP.Core.Audio.Http;
 
-// --- Section: Public Models ---
+// --- Public Models ---
 
 /// <summary>
 /// Статистика одного CDN-кластера YouTube.
@@ -57,7 +57,7 @@ public sealed class CdnHostStatsEnvelope
     public DateTime LastSavedUtc { get; set; }
 }
 
-// --- Section: Store ---
+// --- Store ---
 
 /// <summary>
 /// Персистентное хранилище статистики YouTube CDN-кластеров.
@@ -93,7 +93,7 @@ internal static class CdnHostStatsStore
     private static bool _dirty;
     private static DateTime _lastSaveTime = DateTime.MinValue;
 
-    // --- Section: Load / Save ---
+    // --- Load / Save ---
 
     /// <summary>
     /// Загружает статистику с диска. Вызывается однократно при старте приложения.
@@ -164,7 +164,7 @@ internal static class CdnHostStatsStore
         }
     }
 
-    // --- Section: Record ---
+    // --- Record ---
 
     /// <summary>
     /// Регистрирует успешное обращение к CDN-хосту.
@@ -236,7 +236,7 @@ internal static class CdnHostStatsStore
     }
 
 
-    // --- Section: Query ---
+    // --- Query ---
 
     /// <summary>
     /// Возвращает EMA TTFB для кластера, к которому принадлежит хост.
@@ -255,7 +255,7 @@ internal static class CdnHostStatsStore
         }
     }
 
-    // --- Section: Startup Warmup ---
+    // --- Startup Warmup ---
 
     /// <summary>
     /// Прогревает top-N CDN-кластеров при старте приложения.
@@ -330,7 +330,7 @@ internal static class CdnHostStatsStore
 
     }
 
-    // --- Section: Periodic Save ---
+    // --- Periodic Save ---
 
     /// <summary>
     /// Сохраняет данные на диск если прошло достаточно времени с последнего сохранения.
@@ -349,7 +349,7 @@ internal static class CdnHostStatsStore
             Save();
     }
 
-    // --- Section: Private Helpers ---
+    // --- Private Helpers ---
 
     private static (int MinHits, int MaxClusters) ComputeAdaptivePolicy(int totalHits) =>
         totalHits switch

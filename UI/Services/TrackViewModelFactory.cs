@@ -1,5 +1,4 @@
-﻿using LMP.Core.Models;
-using LMP.UI.Features.Shared;
+﻿using LMP.UI.Features.Shared;
 
 namespace LMP.UI.Services;
 

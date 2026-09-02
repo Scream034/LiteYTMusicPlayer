@@ -1,5 +1,4 @@
 using System.Reactive.Linq;
-using LMP.Core.Models;
 using LMP.UI.Features.Shared;
 using ReactiveUI;
 

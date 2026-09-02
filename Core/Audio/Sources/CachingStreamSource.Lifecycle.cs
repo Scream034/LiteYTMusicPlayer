@@ -2,7 +2,7 @@ namespace LMP.Core.Audio.Sources;
 
 public sealed partial class CachingStreamSource
 {
-    // --- Section: Epoch-Based Cancellation ---
+    // --- Epoch-Based Cancellation ---
 
     /// <summary>
     /// Откладывает <see cref="IDisposable.Dispose"/> для CTS,
@@ -74,7 +74,7 @@ public sealed partial class CachingStreamSource
     /// <summary>Мгновенно отменяет активные чтения на потоке без уничтожения источника.</summary>
     public void CancelActiveReads() => _readStream?.CancelActiveReads();
 
-    // --- Section: Dispose ---
+    // --- Dispose ---
 
     /// <summary>Общая преамбула dispose: разблокировка gates, cancel epoch + lifetime.</summary>
     private void BeginDispose()
@@ -170,7 +170,7 @@ public sealed partial class CachingStreamSource
         DisposeSharedResources();
     }
 
-    // --- Section: Drain ---
+    // --- Drain ---
 
     /// <summary>
     /// Ожидает завершения всех фоновых disk-write операций перед освобождением lease.

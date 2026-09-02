@@ -455,6 +455,13 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
             return;
         }
 
+        // Проактивная проверка: если URL протух во время длительной паузы/сна,
+        // обновляем его ДО открытия шлюзов и прогрева буфера
+        if (pipeline.Source is Sources.CachingStreamSource cachingSource)
+        {
+            await cachingSource.EnsureStreamFreshnessAsync(_lifetimeCts.Token).ConfigureAwait(false);
+        }
+
         int minBytes = pipeline.SampleRate * pipeline.Channels * sizeof(float) * ResumeMinBufferMs / 1000;
         if (_sharedBackend.BufferedBytes < minBytes)
         {
@@ -828,19 +835,6 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
     /// Возобновляет playback немедленно, если буферы готовы,
     /// или делегирует в <see cref="LaunchDeferredResume"/>.
     /// </summary>
-    /// <remarks>
-    /// Устраняет дублирование блока «warn + deferred» из
-    /// <c>HandlePlayAsync</c>, <c>HandleDeviceRecoveryAsync</c>, <c>FastRewindInternalAsync</c>.
-    /// </remarks>
-    /// <param name="pipeline">Активный pipeline.</param>
-    /// <param name="pcmReady">PCM-порог достигнут.</param>
-    /// <param name="sourceReady">Source-ahead достаточен.</param>
-    /// <param name="warmupPlan">Параметры прогрева.</param>
-    /// <param name="sessionId">ID текущей сессии.</param>
-    /// <param name="startTimers">Запустить UI-таймеры после открытия gate.</param>
-    /// <param name="configurePipeline">Вызвать <see cref="AudioPlayerOptions.OnPipelineConfiguring"/>.</param>
-    /// <param name="trackId">TrackId для конфигурирования pipeline.</param>
-    /// <param name="logContext">Префикс контекста для предупреждения (например, "Initial warmup").</param>
     private void ResumeOrDefer(
         AudioPipeline pipeline,
         bool pcmReady,
@@ -869,8 +863,6 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
     /// <summary>
     /// Возвращает <c>true</c>, если pipeline-команда устарела и должна быть отброшена.
     /// </summary>
-    /// <param name="pipeline">Pipeline команды.</param>
-    /// <param name="sessionId">Session ID команды.</param>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool IsPipelineCommandStale(AudioPipeline pipeline, int sessionId) =>
         _disposed || _activePipeline != pipeline || _session.IsStale(sessionId);
@@ -936,9 +928,6 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
     /// Выполняет fast-rewind текущего pipeline в начало трека
     /// без пересоздания source, decoder и файловых дескрипторов.
     /// </summary>
-    /// <param name="pipeline">Активный pipeline для rewind.</param>
-    /// <param name="sessionId">ID текущей сессии.</param>
-    /// <returns><c>true</c> если rewind успешен; <c>false</c> — нужен fallback на полный restart.</returns>
     private async Task<bool> FastRewindInternalAsync(AudioPipeline pipeline, int sessionId)
     {
         try
@@ -1205,13 +1194,6 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
     /// <summary>
     /// Возвращает кэшированный URL callback для текущего трека или создаёт новый.
     /// </summary>
-    /// <param name="optionCallback">Источник callback из <see cref="AudioPlayerOptions"/>.</param>
-    /// <param name="cachedCallback">Кэш delegate для текущего trackId.</param>
-    /// <param name="cachedTrackId">TrackId, для которого был создан кэш.</param>
-    /// <returns>
-    /// Обёрнутый <c>Func&lt;CancellationToken, Task&lt;string?&gt;&gt;</c>
-    /// или <c>null</c> если callback не задан или trackId пуст.
-    /// </returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private Func<CancellationToken, Task<string?>>? GetOrCreateUrlCallback(
         Func<string, CancellationToken, ValueTask<string?>>? optionCallback,

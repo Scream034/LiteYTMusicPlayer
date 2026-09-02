@@ -15,9 +15,9 @@ public static class ManualTests
     {
         var sw = Stopwatch.StartNew();
 
-        Console.WriteLine("\n" + new string('═', 70));
+        Console.WriteLine("\n" + new string('=', 70));
         Console.WriteLine("  LMP TEST SUITE");
-        Console.WriteLine(new string('═', 70) + "\n");
+        Console.WriteLine(new string('=', 70) + "\n");
 
         var runner = new TestRunner(AppEntry.Services);
         int passed = 0, failed = 0, skipped = 0;
@@ -59,10 +59,10 @@ public static class ManualTests
 
         sw.Stop();
 
-        Console.WriteLine("\n" + new string('═', 70));
+        Console.WriteLine("\n" + new string('=', 70));
         Console.WriteLine($"  RESULTS: {passed} passed, {failed} failed, {skipped} skipped " +
                           $"({sw.Elapsed.TotalSeconds:F1}s)");
-        Console.WriteLine(new string('═', 70) + "\n");
+        Console.WriteLine(new string('=', 70) + "\n");
     }
 
     /// <summary>Быстрый запуск только NToken integration теста.</summary>
@@ -120,4 +120,12 @@ public static class ManualTests
     /// <summary>Проверка альтернативного API endpoint через googleapis.com (bypass ТСПУ без Zapret).</summary>
     public static Task TestAlternativeApiAsync() =>
         Integration.CdnDiagnosticTests.TestAlternativeApiEndpointAsync();
+
+    /// <summary>Быстрый запуск тестов времени жизни URL и упреждающего refresh.</summary>
+    public static async Task TestStreamFreshnessAsync()
+    {
+        await Unit.StreamFreshnessTests.TestUrlExExpireParsingAsync();
+        await Unit.StreamFreshnessTests.TestRefreshWithUnchangedNTokenAndValidExpireAsync();
+        await Unit.StreamFreshnessTests.TestProactiveStreamFreshnessOnResumeAsync();
+    }
 }

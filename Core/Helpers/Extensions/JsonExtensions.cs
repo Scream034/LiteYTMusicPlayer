@@ -3,9 +3,11 @@ using System.Text.Json;
 
 namespace LMP.Core.Helpers.Extensions;
 
+/// <summary>
+/// Методы расширения для низкоаллокационного разбора <see cref="JsonElement"/>.
+/// </summary>
 internal static class JsonExtensions
 {
-    // Кэш UTF-8 имен свойств для избежания повторной конвертации
     private static class Utf8PropertyNames
     {
         public static readonly byte[] Thumbnails = "thumbnails"u8.ToArray();
@@ -24,9 +26,8 @@ internal static class JsonExtensions
     extension(JsonElement element)
     {
         /// <summary>
-        /// Извлекает VisitorData из структуры ответа responseContext (zero-alloc по UTF-8 ключам).
+        /// Извлекает VisitorData из структуры <c>responseContext</c>.
         /// </summary>
-        /// <returns>Строка visitorData или null, если свойство отсутствует.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public string? GetVisitorData() =>
             element.GetPropertyOrNull("responseContext"u8)
@@ -34,7 +35,7 @@ internal static class JsonExtensions
                    ?.GetStringOrNull();
 
         /// <summary>
-        /// проверка свойства по строке.
+        /// Возвращает свойство по строковому имени или <see langword="null"/>, если оно отсутствует или равно null.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public JsonElement? GetPropertyOrNull(string propertyName)
@@ -43,8 +44,7 @@ internal static class JsonExtensions
                 return null;
 
             if (element.TryGetProperty(propertyName, out var result)
-                && result.ValueKind is not JsonValueKind.Null
-                && result.ValueKind is not JsonValueKind.Undefined)
+                && result.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
             {
                 return result;
             }
@@ -53,8 +53,7 @@ internal static class JsonExtensions
         }
 
         /// <summary>
-        /// проверка по UTF8 байтам — zero-alloc для имени свойства.
-        /// Используйте для горячих путей с константными именами.
+        /// Возвращает свойство по UTF-8 имени без аллокаций или <see langword="null"/>.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public JsonElement? GetPropertyOrNull(ReadOnlySpan<byte> utf8PropertyName)
@@ -63,8 +62,7 @@ internal static class JsonExtensions
                 return null;
 
             if (element.TryGetProperty(utf8PropertyName, out var result)
-                && result.ValueKind is not JsonValueKind.Null
-                && result.ValueKind is not JsonValueKind.Undefined)
+                && result.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
             {
                 return result;
             }
@@ -120,7 +118,7 @@ internal static class JsonExtensions
             element.EnumerateObjectOrNull() ?? default;
 
         /// <summary>
-        /// получает N-й элемент массива через индексатор — O(1).
+        /// Возвращает элемент массива по индексу за O(1) или <see langword="null"/>.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public JsonElement? GetArrayElementOrNull(int index)
@@ -128,7 +126,7 @@ internal static class JsonExtensions
             if (element.ValueKind != JsonValueKind.Array)
                 return null;
 
-            int len = element.GetArrayLength();
+            var len = element.GetArrayLength();
             if (index < 0 || index >= len)
                 return null;
 
@@ -136,7 +134,7 @@ internal static class JsonExtensions
         }
 
         /// <summary>
-        /// Первый элемент массива без LINQ.
+        /// Возвращает первый элемент массива или <see langword="null"/>, если массив пуст.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public JsonElement? GetFirstArrayElementOrNull()
@@ -148,8 +146,7 @@ internal static class JsonExtensions
         }
 
         /// <summary>
-        /// рекурсивный поиск БЕЗ промежуточных List аллокаций.
-        /// Использует ArrayPool для стека результатов.
+        /// Рекурсивно собирает все вложенные свойства с именем <paramref name="propertyName"/> в список <paramref name="results"/>.
         /// </summary>
         public void EnumerateDescendantProperties(string propertyName, List<JsonElement> results)
         {
@@ -170,7 +167,7 @@ internal static class JsonExtensions
         }
 
         /// <summary>
-        /// ранний выход при первом найденном свойстве — избегает обхода всего дерева.
+        /// Ищет первое вхождение свойства <paramref name="propertyName"/> в дереве с ранним выходом.
         /// </summary>
         public JsonElement? FindFirstDescendantProperty(string propertyName)
         {
@@ -199,7 +196,7 @@ internal static class JsonExtensions
         }
 
         /// <summary>
-        /// поиск по UTF-8 имени — для горячих путей.
+        /// Ищет первое вхождение UTF-8 свойства <paramref name="utf8PropertyName"/> в дереве с ранним выходом.
         /// </summary>
         public JsonElement? FindFirstDescendantProperty(ReadOnlySpan<byte> utf8PropertyName)
         {
@@ -227,7 +224,9 @@ internal static class JsonExtensions
             return null;
         }
 
-        // Обратная совместимость — ленивый вариант
+        /// <summary>
+        /// Лениво собирает все свойства с именем <paramref name="propertyName"/> в дереве.
+        /// </summary>
         public IEnumerable<JsonElement> EnumerateDescendantProperties(string propertyName)
         {
             var results = new List<JsonElement>(4);
@@ -236,8 +235,7 @@ internal static class JsonExtensions
         }
 
         /// <summary>
-        /// HELPER: извлекает текст из runs[0].text — частый паттерн YouTube API.
-        /// используем UTF-8 константы.
+        /// Извлекает строку из <c>runs[0].text</c>.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public string? GetTextFromRuns()
@@ -253,7 +251,7 @@ internal static class JsonExtensions
         }
 
         /// <summary>
-        /// HELPER: извлекает videoId из navigationEndpoint.
+        /// Извлекает идентификатор видео из <c>navigationEndpoint</c>.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public string? GetVideoIdFromNavigation()
@@ -261,7 +259,6 @@ internal static class JsonExtensions
             var nav = element.GetPropertyOrNull(Utf8PropertyNames.NavigationEndpoint);
             if (nav is null) return null;
 
-            // Пробуем watchEndpoint.videoId
             var watchEndpoint = nav.Value.GetPropertyOrNull("watchEndpoint"u8);
             if (watchEndpoint is not null)
             {
@@ -269,7 +266,6 @@ internal static class JsonExtensions
                 if (videoId is not null) return videoId.Value.GetStringOrNull();
             }
 
-            // Пробуем browseEndpoint.browseId
             var browseEndpoint = nav.Value.GetPropertyOrNull(Utf8PropertyNames.BrowseEndpoint);
             if (browseEndpoint is not null)
             {
@@ -281,7 +277,7 @@ internal static class JsonExtensions
         }
 
         /// <summary>
-        /// HELPER: извлекает playlistId.
+        /// Извлекает <c>playlistId</c>.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public string? GetPlaylistIdSafe()
@@ -291,7 +287,7 @@ internal static class JsonExtensions
         }
 
         /// <summary>
-        /// HELPER: извлекает continuation token.
+        /// Извлекает токен продолжения страницы (<c>continuationCommand.token</c>).
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public string? GetContinuationToken()

@@ -32,26 +32,3 @@ public partial class Thumbnail
             new($"https://img.youtube.com/vi/{videoId}/hqdefault.jpg", new Resolution(480, 360)),
         ];
 }
-
-/// <summary>
-/// Extensions for <see cref="Thumbnail" />.
-/// </summary>
-public static class ThumbnailExtensions
-{
-    /// <inheritdoc cref="ThumbnailExtensions" />
-    extension(IEnumerable<Thumbnail> thumbnails)
-    {
-        /// <summary>
-        /// Gets the thumbnail with the highest resolution (by area).
-        /// Returns null if the sequence is empty.
-        /// </summary>
-        public Thumbnail? TryGetWithHighestResolution() => thumbnails.MaxBy(static t => t.Resolution.Area);
-
-        /// <summary>
-        /// Gets the thumbnail with the highest resolution (by area).
-        /// </summary>
-        public Thumbnail GetWithHighestResolution() =>
-            thumbnails.TryGetWithHighestResolution()
-            ?? throw new InvalidOperationException("Input thumbnail collection is empty.");
-    }
-}

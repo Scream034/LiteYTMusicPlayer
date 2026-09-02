@@ -7,7 +7,7 @@ namespace LMP.Core.Services;
 public sealed class LocalizationService : INotifyPropertyChanged
 {
     public static readonly LocalizationService Instance = new();
-    
+
     private Dictionary<string, string> _resources = [];
     private bool _isInitialized;
 
@@ -33,7 +33,7 @@ public sealed class LocalizationService : INotifyPropertyChanged
                 CurrentLanguageCode = value;
                 LoadLanguage(value);
 
-                // ═══ Обновить bootstrap для быстрого старта ═══
+                // Обновить bootstrap для быстрого старта
                 BootstrapSettings.Current.LanguageCode = value;
                 BootstrapSettings.Current.Save();
 
@@ -57,7 +57,7 @@ public sealed class LocalizationService : INotifyPropertyChanged
         }
 
         var langToUse = langCode ?? "en";
-        
+
         if (!AvailableLanguages.Any(l => l.Code == langToUse))
         {
             Log.Warn($"Unknown language '{langToUse}', falling back to 'en'");
@@ -67,7 +67,7 @@ public sealed class LocalizationService : INotifyPropertyChanged
         CurrentLanguageCode = langToUse;
         LoadLanguage(langToUse);
         _isInitialized = true;
-        
+
         Log.Info($"LocalizationService initialized: {langToUse}");
     }
 
@@ -76,7 +76,7 @@ public sealed class LocalizationService : INotifyPropertyChanged
         try
         {
             var uri = new Uri($"avares://LMP/Assets/Localization/{langCode}.json");
-            
+
             if (!AssetLoader.Exists(uri))
             {
                 Log.Error($"Localization file not found: {uri}");
@@ -92,13 +92,13 @@ public sealed class LocalizationService : INotifyPropertyChanged
             // (вложенные объекты вместо строк, массивы и т.д.)
             var resources = JsonSerializer.Deserialize(json, AppJsonContext.Default.DictionaryStringString) ?? throw new InvalidOperationException("Deserialization returned null");
             _resources = resources;
-            
+
             Log.Info($"✓ Loaded {langCode}.json ({_resources.Count} keys)");
         }
         catch (Exception ex)
         {
             Log.Error($"Failed to load '{langCode}': {ex.Message}");
-            
+
             if (langCode == "en")
             {
                 _resources = [];

@@ -8,7 +8,7 @@ namespace LMP.Core.Youtube.Bridge.PoToken;
 /// </summary>
 public sealed class PoTokenProvider : IDisposable
 {
-    // --- Section: Constants ---
+    // --- Constants ---
 
     /// <summary>Порог: если осталось меньше N минут — нужно обновить токен.</summary>
     private const int RefreshThresholdMinutes = 60;
@@ -16,7 +16,7 @@ public sealed class PoTokenProvider : IDisposable
     private static readonly string CachePath =
         Path.Combine(G.Folder.NTokenCache, "pot_session.json");
 
-    // --- Section: State ---
+    // --- State ---
 
     private readonly BotGuardService _botGuard;
 
@@ -37,7 +37,7 @@ public sealed class PoTokenProvider : IDisposable
         _botGuard = new BotGuardService(http);
     }
 
-    // --- Section: Public API ---
+    // --- Public API ---
 
     /// <summary>
     /// Возвращает session-bound PoToken для параметра <c>&amp;pot=</c> videoplayback URL.
@@ -132,7 +132,7 @@ public sealed class PoTokenProvider : IDisposable
         Log.Info("[PoTokenProvider] Cache invalidated");
     }
 
-    // --- Section: Lazy Init ---
+    // --- Lazy Init ---
 
     private async ValueTask EnsureInitializedAsync(CancellationToken ct)
     {
@@ -151,7 +151,7 @@ public sealed class PoTokenProvider : IDisposable
         }
     }
 
-    // --- Section: Disk I/O ---
+    // --- Disk I/O ---
 
     private async Task LoadFromDiskAsync(CancellationToken ct)
     {
@@ -219,7 +219,7 @@ public sealed class PoTokenProvider : IDisposable
         }
     }
 
-    // --- Section: Helpers ---
+    // --- Helpers ---
 
     [System.Runtime.CompilerServices.MethodImpl(
         System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -235,7 +235,7 @@ public sealed class PoTokenProvider : IDisposable
     private static string Truncate(string? s, int len = 12) =>
         s is null ? "null" : s.Length <= len ? s : string.Concat(s.AsSpan(0, len), "...");
 
-    // --- Section: IDisposable ---
+    // --- IDisposable ---
 
     /// <inheritdoc/>
     public void Dispose()

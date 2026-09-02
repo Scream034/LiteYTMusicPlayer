@@ -7,7 +7,7 @@ using LMP.Core.Youtube.Videos.Streams;
 
 namespace LMP.Core.Audio.Http;
 
-// --- Section: Public Models ---
+// --- Public Models ---
 
 /// <summary>
 /// Один вариант аудиопотока внутри закэшированного манифеста.
@@ -97,7 +97,7 @@ public sealed class SessionCacheEnvelope
     public DateTime LastCleanupUtc { get; set; }
 }
 
-// --- Section: Store ---
+// --- Store ---
 
 /// <summary>
 /// Персистентный дисковый кэш полных YouTube аудио-манифестов.
@@ -139,7 +139,7 @@ internal static class SessionCacheStore
     private static SessionCacheEnvelope _data = new();
     private static bool _dirty;
 
-    // --- Section: Load / Save ---
+    // --- Load / Save ---
 
     /// <summary>
     /// Загружает session-кэш с диска. Вызывается однократно при старте.
@@ -223,7 +223,7 @@ internal static class SessionCacheStore
         }
     }
 
-    // --- Section: Record ---
+    // --- Record ---
 
     /// <summary>
     /// Сохраняет полный манифест после успешного YouTube API resolve.
@@ -297,7 +297,7 @@ internal static class SessionCacheStore
         _ = Task.Run(Save);
     }
 
-    // --- Section: Probe ---
+    // --- Probe ---
 
     /// <summary>
     /// Пытается получить и проверить закэшированный манифест для трека.
@@ -437,7 +437,7 @@ internal static class SessionCacheStore
         Log.Debug($"[SessionCache] Invalidated manifest for {trackId}");
     }
 
-    // --- Section: Private Helpers ---
+    // --- Private Helpers ---
 
     /// <summary>
     /// Возвращает индекс записи по trackId. Вызывается под lock.
