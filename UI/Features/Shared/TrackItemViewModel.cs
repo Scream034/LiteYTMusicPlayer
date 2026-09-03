@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Windows.Input;
+using Avalonia.Media;
 using ReactiveUI;
-
 
 namespace LMP.UI.Features.Shared;
 
@@ -9,19 +9,6 @@ public sealed partial class TrackItemViewModel : ViewModelBase
 {
     #region Weak Event Subscription
 
-    /// <summary>
-    /// Разрывает сильную ссылку Track → VM через делегат.
-    ///
-    /// Проблема: TrackInfo живёт в TrackRegistry._pinned (GC Root).
-    /// Track.PropertyChanged += handler создаёт делегат с Target=VM.
-    /// Пока Track жив (pinned) — жив делегат — жива VM — жива вся ReactiveUI-цепочка (~15 объектов).
-    /// VM никогда не собирается GC, кэш фабрики растёт бесконечно.
-    ///
-    /// Решение: Handle() содержит WeakReference&lt;VM&gt;.
-    /// Track.PropertyChanged держит сильную ссылку на этот маленький объект (~40 байт),
-    /// но НЕ на VM. VM собирается GC когда страница навигации очищает коллекцию.
-    /// При следующем Handle() — TryGetTarget возвращает false → автоматический unsub.
-    /// </summary>
     private sealed class WeakPropertyChangedSubscription
     {
         private readonly WeakReference<TrackItemViewModel> _weak;
@@ -49,6 +36,24 @@ public sealed partial class TrackItemViewModel : ViewModelBase
 
     #endregion
 
+    #region Static Geometries Cache
+
+    private static StreamGeometry? _checkCircleGeometry;
+    private static StreamGeometry? _cloudCheckGeometry;
+
+    private static StreamGeometry? CheckCircleGeometry =>
+        _checkCircleGeometry ??= ResolveStaticGeometry("Icon.CheckCircle");
+
+    private static StreamGeometry? CloudCheckGeometry =>
+        _cloudCheckGeometry ??= ResolveStaticGeometry("Icon.CloudCheck");
+
+    private static StreamGeometry? ResolveStaticGeometry(string key) =>
+        Avalonia.Application.Current?.Resources.TryGetResource(key, null, out var res) == true
+            ? res as StreamGeometry
+            : null;
+
+    #endregion
+
     private readonly AudioEngine _audio;
     private readonly MusicLibraryManager _manager;
     private readonly DownloadService _downloads;
@@ -56,6 +61,15 @@ public sealed partial class TrackItemViewModel : ViewModelBase
     private readonly LibraryService _library;
 
     private Action<TrackInfo>? _onPlay;
+
+    // Ленивые поля для команд контекстного меню (минимизация аллокаций при загрузке списков)
+    private ICommand? _addToQueueCommand;
+    private ICommand? _startRadioCommand;
+    private ICommand? _saveToDownloadsCommand;
+    private ICommand? _removeFromPlaylistCommand;
+    private ICommand? _removeFromQueueCommand;
+    private ICommand? _addToPlaylistCommand;
+    private ICommand? _copyLinkCommand;
 
     public TrackInfo Track { get; }
     public bool IsDisposed { get; private set; }
@@ -66,15 +80,7 @@ public sealed partial class TrackItemViewModel : ViewModelBase
     public TimeSpan Duration => Track.Duration;
     public string ThumbnailUrl => Track.ThumbnailUrl;
 
-    /// <summary>
-    /// Проброс Track.IsLiked для одноуровневого XAML-биндинга.
-    /// Обновляется через OnTrackPropertyChanged → устраняет DataContextNode + 2× PropertyAccessorNode.
-    /// </summary>
     public bool IsLiked => Track.IsLiked;
-
-    /// <summary>
-    /// Проброс Track.IsDownloaded для одноуровневого XAML-биндинга.
-    /// </summary>
     public bool IsDownloaded => Track.IsDownloaded;
 
     public string FormattedDuration => Duration.TotalHours >= 1
@@ -93,16 +99,23 @@ public sealed partial class TrackItemViewModel : ViewModelBase
     public bool ShowAddToQueue => !IsQueueContext;
 
     /// <summary>
-    /// Флаг отображения иконки скачанного трека.
-    /// Исключает наложение на прогресс-бар при активной загрузке.
+    /// Флаг отображения иконки состояния кэша.
     /// </summary>
-    public bool ShowDownloadedIcon => Track.IsDownloaded && !IsDownloading;
+    public bool HasCacheIcon => !IsDownloading && (Track.IsDownloaded || Track.IsCached);
 
     /// <summary>
-    /// Замена MultiBinding в AXAML. Вычисляется на стороне VM без аллокаций.
-    /// Исключает наложение на прогресс-бар при активной загрузке.
+    /// Геометрия иконки кэша из статического кэша.
     /// </summary>
-    public bool ShowCachedIcon => Track.IsCached && !Track.IsDownloaded && !IsDownloading;
+    public StreamGeometry? CacheIconGeometry => Track.IsDownloaded
+        ? CheckCircleGeometry
+        : (Track.IsCached ? CloudCheckGeometry : null);
+
+    /// <summary>
+    /// Подсказка для иконки кэша.
+    /// </summary>
+    public string? CacheIconTooltip => Track.IsDownloaded
+        ? L["Track_Downloaded"]
+        : (Track.IsCached ? L["Track_Cached"] : null);
 
     public string DownloadStatusText
     {
@@ -120,13 +133,27 @@ public sealed partial class TrackItemViewModel : ViewModelBase
 
     public ICommand PlayCommand { get; }
     public ICommand ToggleLikeCommand { get; }
-    public ICommand AddToQueueCommand { get; }
-    public ICommand StartRadioCommand { get; }
-    public ICommand SaveToDownloadsCommand { get; }
-    public ICommand RemoveFromPlaylistCommand { get; }
-    public ICommand RemoveFromQueueCommand { get; }
-    public ICommand AddToPlaylistCommand { get; }
-    public ICommand CopyLinkCommand { get; }
+
+    public ICommand AddToQueueCommand =>
+        _addToQueueCommand ??= new TrackSyncCommand(OnAddToQueue);
+
+    public ICommand StartRadioCommand =>
+        _startRadioCommand ??= new TrackSyncCommand(OnStartRadio);
+
+    public ICommand SaveToDownloadsCommand =>
+        _saveToDownloadsCommand ??= new TrackAsyncCommand(SaveToDownloadsAsync);
+
+    public ICommand AddToPlaylistCommand =>
+        _addToPlaylistCommand ??= new TrackAsyncCommand(AddToPlaylistAsync);
+
+    public ICommand CopyLinkCommand =>
+        _copyLinkCommand ??= new TrackAsyncCommand(CopyLinkAsync);
+
+    public ICommand RemoveFromPlaylistCommand =>
+        _removeFromPlaylistCommand ??= new TrackSyncCommand(OnRemoveFromPlaylist);
+
+    public ICommand RemoveFromQueueCommand =>
+        _removeFromQueueCommand ??= new TrackSyncCommand(OnRemoveFromQueue);
 
     public TrackItemViewModel(
         TrackInfo track,
@@ -146,22 +173,7 @@ public sealed partial class TrackItemViewModel : ViewModelBase
         _onPlay = onPlay;
 
         PlayCommand = new TrackAsyncCommand(PlayAsync);
-        ToggleLikeCommand = new TrackAsyncCommand(() => _manager.ToggleLikeAsync(Track));
-        AddToQueueCommand = new TrackSyncCommand(() => _audio.Enqueue(Track));
-        StartRadioCommand = new TrackSyncCommand(() => StartRadioAction?.Invoke(Track));
-        SaveToDownloadsCommand = new TrackAsyncCommand(SaveToDownloadsAsync);
-        AddToPlaylistCommand = new TrackAsyncCommand(AddToPlaylistAsync);
-        CopyLinkCommand = new TrackAsyncCommand(CopyLinkAsync);
-
-        RemoveFromPlaylistCommand = new TrackSyncCommand(() =>
-        {
-            if (IsPlaylistContext) RemoveFromPlaylistAction?.Invoke(Track);
-        });
-
-        RemoveFromQueueCommand = new TrackSyncCommand(() =>
-        {
-            if (IsQueueContext) _audio.RemoveFromQueue(Track);
-        });
+        ToggleLikeCommand = new TrackAsyncCommand(ToggleLikeAsync);
 
         _trackSubscription = new WeakPropertyChangedSubscription(this, track);
     }
@@ -182,21 +194,42 @@ public sealed partial class TrackItemViewModel : ViewModelBase
                 }
                 this.RaisePropertyChanged(nameof(IsDownloaded));
                 this.RaisePropertyChanged(nameof(DownloadStatusText));
-                this.RaisePropertyChanged(nameof(ShowDownloadedIcon));
-                this.RaisePropertyChanged(nameof(ShowCachedIcon));
+                this.RaisePropertyChanged(nameof(HasCacheIcon));
+                this.RaisePropertyChanged(nameof(CacheIconGeometry));
+                this.RaisePropertyChanged(nameof(CacheIconTooltip));
                 break;
 
             case nameof(Track.IsCached):
                 this.RaisePropertyChanged(nameof(DownloadStatusText));
-                this.RaisePropertyChanged(nameof(ShowCachedIcon));
+                this.RaisePropertyChanged(nameof(HasCacheIcon));
+                this.RaisePropertyChanged(nameof(CacheIconGeometry));
+                this.RaisePropertyChanged(nameof(CacheIconTooltip));
                 break;
         }
+    }
+
+    private Task ToggleLikeAsync() => _manager.ToggleLikeAsync(Track);
+
+    private void OnAddToQueue() => _audio.Enqueue(Track);
+
+    private void OnStartRadio() => StartRadioAction?.Invoke(Track);
+
+    private void OnRemoveFromPlaylist()
+    {
+        if (IsPlaylistContext)
+            RemoveFromPlaylistAction?.Invoke(Track);
+    }
+
+    private void OnRemoveFromQueue()
+    {
+        if (IsQueueContext)
+            _audio.RemoveFromQueue(Track);
     }
 
     private async Task PlayAsync()
     {
         if (_audio.CurrentTrack?.Id == Id)
-            await _audio.SetPlaybackStateAsync(!_audio.IsPlaying);
+            await _audio.SetPlaybackStateAsync(!_audio.IsPlaying).ConfigureAwait(false);
         else
             _onPlay?.Invoke(Track);
     }
@@ -212,8 +245,8 @@ public sealed partial class TrackItemViewModel : ViewModelBase
 
             bool success = await cache.ExportTrackToDownloadsAsync(
                 Track.Id,
-                async id => await _library.GetTrackAsync(id),
-                async t => await _library.AddOrUpdateTrackAsync(t));
+                async id => await _library.GetTrackAsync(id).ConfigureAwait(false),
+                async t => await _library.AddOrUpdateTrackAsync(t).ConfigureAwait(false)).ConfigureAwait(false);
 
             if (success) Track.IsDownloaded = true;
         }
@@ -237,9 +270,9 @@ public sealed partial class TrackItemViewModel : ViewModelBase
         IsDownloading = isDownloading;
         DownloadProgress = isDownloading ? progress : 0f;
 
-        // Явно обновляем триггеры видимости элементов без участия конвертеров
-        this.RaisePropertyChanged(nameof(ShowDownloadedIcon));
-        this.RaisePropertyChanged(nameof(ShowCachedIcon));
+        this.RaisePropertyChanged(nameof(HasCacheIcon));
+        this.RaisePropertyChanged(nameof(CacheIconGeometry));
+        this.RaisePropertyChanged(nameof(CacheIconTooltip));
 
         if (!isDownloading)
         {
@@ -251,11 +284,11 @@ public sealed partial class TrackItemViewModel : ViewModelBase
 
     private async Task AddToPlaylistAsync()
     {
-        var selectedIds = await _dialog.ShowAddToPlaylistDialogAsync(Track);
+        var selectedIds = await _dialog.ShowAddToPlaylistDialogAsync(Track).ConfigureAwait(false);
         if (selectedIds.Count == 0) return;
 
         foreach (var playlistId in selectedIds)
-            await _manager.AddTrackToPlaylistAsync(playlistId, Track);
+            await _manager.AddTrackToPlaylistAsync(playlistId, Track).ConfigureAwait(false);
     }
 
     private async Task CopyLinkAsync()
@@ -275,7 +308,7 @@ public sealed partial class TrackItemViewModel : ViewModelBase
             return;
         }
 
-        await Clipboard.SetTextAsync(url);
+        await Clipboard.SetTextAsync(url).ConfigureAwait(false);
 
         CopyHintService.Instance.Show(
             L["Track_Copied"] ?? "Copied!",

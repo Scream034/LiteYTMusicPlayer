@@ -82,7 +82,7 @@
                 <controls:TrackListControl x:Name="QueueTrackList"
                     Items="{Binding QueueItems}"
                     FilterText="{Binding FilterQuery}"
-                    IsLoading="False"
+                    IsLoading="{Binding IsLoading}"
                     IsLoadingMore="False"
                     ReachedEnd="True"
                     IsQueueContext="True"

@@ -771,10 +771,8 @@ public partial class TrackListControl : UserControl
         if (sv == null || index < 0) return;
         if (Items is not ICollection col || index >= col.Count) return;
 
-        // Позиционируем с запасом в 1 трек сверху для контекста
         double targetY = Math.Max(0, (index * ItemHeight) - ItemHeight);
 
-        // Даём лейауту посчитать Extent, если он ещё нулевой
         double maxScroll = Math.Max(0, sv.Extent.Height - sv.Viewport.Height);
         if (maxScroll > 0)
         {
@@ -787,8 +785,10 @@ public partial class TrackListControl : UserControl
         }
         else
         {
-            _snapScroll?.CancelAnimation();
-            sv.Offset = new Vector(sv.Offset.X, targetY);
+            if (_snapScroll != null)
+                _snapScroll.JumpTo(targetY);
+            else
+                sv.Offset = new Vector(sv.Offset.X, targetY);
         }
 
         _repeater?.InvalidateMeasure();
@@ -893,8 +893,9 @@ public partial class TrackListControl : UserControl
 
     /// <summary>
     /// Проставляет контекстные флаги всем VM в коллекции.
-    /// Пропускает VM у которых значение уже совпадает — устраняет
+    /// Пропускает VM, у которых значение уже совпадает — устраняет
     /// лавину RaisePropertyChanged при повторных вызовах с теми же данными.
+    /// Исключает аллокацию IEnumerator при приведении к списочному интерфейсу.
     /// </summary>
     private void UpdateItemsContext()
     {
@@ -902,6 +903,18 @@ public partial class TrackListControl : UserControl
 
         var isPlaylist = IsPlaylistContext;
         var isQueue = IsQueueContext;
+
+        if (Items is IList<TrackItemViewModel> list)
+        {
+            int count = list.Count;
+            for (int i = 0; i < count; i++)
+            {
+                var vm = list[i];
+                if (vm.IsPlaylistContext != isPlaylist) vm.IsPlaylistContext = isPlaylist;
+                if (vm.IsQueueContext != isQueue) vm.IsQueueContext = isQueue;
+            }
+            return;
+        }
 
         foreach (var item in Items)
         {
@@ -989,6 +1002,22 @@ public partial class TrackListControl : UserControl
             StopAnimation();
             _targetY = _sv.Offset.Y;
             _currentY = _sv.Offset.Y;
+        }
+
+        /// <summary>
+        /// Выполняет мгновенный переход к заданной координате без запуска сглаживания и без отката позиции.
+        /// </summary>
+        /// <param name="targetY">Целевая Y-координата скролла.</param>
+        public void JumpTo(double targetY)
+        {
+            StopAnimation();
+            double maxScroll = GetMaxScrollY();
+            double clamped = Math.Clamp(targetY, 0, maxScroll);
+
+            _currentY = clamped;
+            _targetY = clamped;
+
+            ApplyOffset(clamped);
         }
 
         private void InitializeScrollBar()

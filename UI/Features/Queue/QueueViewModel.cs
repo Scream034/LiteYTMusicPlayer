@@ -1,4 +1,5 @@
 using Avalonia.Collections;
+using Avalonia.Threading;
 using LMP.UI.Features.Shared;
 using ReactiveUI;
 
@@ -228,8 +229,15 @@ public sealed partial class QueueViewModel : TrackListReorderableViewModel
     protected override void OnResume()
     {
         _isSuspended = false;
-        RefreshFromAudioEngine();
         Log.Debug("[QueueVM] Resumed");
+        RefreshFromAudioEngine();
+    }
+
+    /// <inheritdoc />
+    public override async Task OnNavigatedToAsync()
+    {
+        await base.OnNavigatedToAsync().ConfigureAwait(false);
+        RefreshFromAudioEngine();
     }
 
     /// <inheritdoc />

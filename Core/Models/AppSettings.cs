@@ -248,7 +248,7 @@ public sealed class AudioSettings
     /// <summary>
     /// Пропускать треки, требующие сложной расшифровки n-токена.
     /// </summary>
-    public bool SkipNTokenTracks { get; set; } = true;
+    public bool SkipNTokenTracks { get; set; } = false;
 }
 
 /// <summary>

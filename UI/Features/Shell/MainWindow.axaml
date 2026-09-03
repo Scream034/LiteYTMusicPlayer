@@ -302,7 +302,7 @@
                     IsTransitionReversed="False">
                     <TransitioningContentControl.PageTransition>
                         <CompositePageTransition>
-                            <CrossFade Duration="0:0:0.2" />
+                            <CrossFade Duration="0:0:0.130" />
                         </CompositePageTransition>
                     </TransitioningContentControl.PageTransition>
                 </TransitioningContentControl>

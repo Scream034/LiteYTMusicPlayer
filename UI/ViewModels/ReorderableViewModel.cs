@@ -1,7 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
 using ReactiveUI;
-
 using System.Reactive.Linq;
 using LMP.UI.Features.Shell;
 using Avalonia.Collections;
@@ -32,15 +31,15 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
     protected readonly Dictionary<string, TSource> _sources = [];
 
     protected readonly Dictionary<string, TViewModel> _vmCache = [];
-    protected readonly Dictionary<TViewModel, string> _vmToId = new(ReferenceEqualityComparer.Instance);
 
     private List<TViewModel> _rebuildBuffer = [];
 
     private CancellationTokenSource? _loadCts;
     private bool _isDisposed;
 
-    private bool _isDataLoading = true;
+    private bool _isDataLoading;
     private bool _isTransitioning;
+    private TaskCompletionSource? _transitionTcs;
 
     #endregion
 
@@ -89,9 +88,11 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
 
     #region ISmoothTransitionViewModel
 
+    /// <inheritdoc />
     public virtual void PrepareForTransition()
     {
         _isTransitioning = true;
+        _transitionTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         this.RaisePropertyChanged(nameof(IsLoading));
     }
 
@@ -99,12 +100,14 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
 
     #region Lifecycle
 
+    /// <inheritdoc />
     public override async Task OnNavigatedToAsync()
     {
         _isTransitioning = false;
+        _transitionTcs?.TrySetResult();
         this.RaisePropertyChanged(nameof(IsLoading));
 
-        await base.OnNavigatedToAsync();
+        await base.OnNavigatedToAsync().ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -132,6 +135,14 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
     protected virtual Task SaveMoveAsync(int fromIndex, int toIndex, CancellationToken ct) => Task.CompletedTask;
 
     /// <summary>
+    /// Извлекает строковый идентификатор напрямую из экземпляра ViewModel.
+    /// Устраняет необходимость хранения обратного словаря _vmToId.
+    /// </summary>
+    /// <param name="vm">Экземпляр модели представления.</param>
+    /// <returns>Уникальный строковый идентификатор элемента.</returns>
+    protected abstract string GetViewModelId(TViewModel vm);
+
+    /// <summary>
     /// Нормализует свежезагруженный source-элемент перед помещением в master-слой.
     /// Позволяет производным VM канонизировать объекты и тем самым исключить
     /// рассинхронизацию между _sources и TrackItemViewModel.Track.
@@ -147,6 +158,45 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
     /// <param name="current">Текущий экземпляр из _sources.</param>
     /// <param name="fresh">Свежий нормализованный экземпляр.</param>
     protected virtual void MergeSourceItem(TSource current, TSource fresh) { }
+
+    #endregion
+
+    #region Transition Barrier
+
+    /// <summary>
+    /// Асинхронно ожидает завершения анимации перехода страницы, если она активна.
+    /// Позволяет подготовить DTO в пуле потоков и не забивать UI-поток до окончания рендеринга.
+    /// </summary>
+    /// <param name="ct">Токен отмены операции.</param>
+    /// <returns>Задача, представляющая ожидание завершения визуального перехода.</returns>
+    protected async Task WaitForTransitionAsync(CancellationToken ct)
+    {
+        var tcs = _transitionTcs;
+        if (!_isTransitioning || tcs == null)
+            return;
+
+        try
+        {
+            await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Корректная отмена при быстрой смене страниц
+        }
+    }
+
+    /// <summary>
+    /// Инициализирует модель предварительно загруженными данными без повторного обращения к хранилищу.
+    /// </summary>
+    /// <param name="allIds">Целевой master-порядок идентификаторов.</param>
+    /// <param name="items">Свежие предварительно загруженные source-элементы.</param>
+    protected void InitializeWithPreloadedData(List<string> allIds, List<TSource> items)
+    {
+        if (_isDisposed) return;
+
+        CancelLoading();
+        UpdateMasterData(items, allIds);
+    }
 
     #endregion
 
@@ -227,6 +277,8 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
             int count = explicitOrder.Count;
             newMasterIds = new List<string>(count);
             retainedIds = new HashSet<string>(count, StringComparer.Ordinal);
+            _sources.EnsureCapacity(_sources.Count + count);
+            _vmCache.EnsureCapacity(_vmCache.Count + count);
 
             for (int i = 0; i < count; i++)
             {
@@ -304,7 +356,6 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
             {
                 vm = CreateViewModel(source);
                 _vmCache[id] = vm;
-                _vmToId[vm] = id;
             }
 
             _rebuildBuffer.Add(vm);
@@ -352,11 +403,6 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
             return;
         }
 
-        // Fast batch path:
-        // 1. Текущий список был крошечным (1-3 элемента) и резко вырос.
-        // 2. Скачок элементов больше порога (быстрый сброс фильтра).
-        // 3. Нет пересечения по ссылкам.
-        // Предотвращает шторм поштучных Add-событий в ItemsRepeater.
         if (Items.Count <= 3 || Math.Abs(Items.Count - newItems.Count) > 10 || !HasVisibleOverlap(newItems))
         {
             Items.Clear();
@@ -364,7 +410,6 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
             return;
         }
 
-        // Incremental path: только для точечных локальных изменений (drag-and-drop, удаление одной строки)
         for (int i = Items.Count - 1; i >= 0; i--)
         {
             if (!ContainsReference(newItems, Items[i]))
@@ -435,7 +480,7 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
 
             try
             {
-                await SaveMoveAsync(masterOld, masterNew, CancellationToken.None);
+                await SaveMoveAsync(masterOld, masterNew, CancellationToken.None).ConfigureAwait(false);
                 Log.Info("[Reorderable] Move saved to DB");
             }
             catch (Exception ex)
@@ -473,11 +518,6 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
 
     #region Helpers
 
-    /// <summary>
-    /// Возвращает <c>true</c>, если текущий видимый список и целевой список
-    /// имеют хотя бы один общий VM-экземпляр.
-    /// </summary>
-    /// <param name="newItems">Целевой список.</param>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool HasVisibleOverlap(List<TViewModel> newItems)
     {
@@ -494,11 +534,6 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
         return false;
     }
 
-    /// <summary>
-    /// Проверяет наличие VM-экземпляра в списке по ссылочному равенству.
-    /// </summary>
-    /// <param name="items">Список для поиска.</param>
-    /// <param name="item">Искомый экземпляр.</param>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool ContainsReference(List<TViewModel> items, TViewModel item)
     {
@@ -537,8 +572,7 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private string GetVmId(TViewModel vm) =>
-        _vmToId.TryGetValue(vm, out var id) ? id : string.Empty;
+    private string GetVmId(TViewModel vm) => GetViewModelId(vm);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int FindVisibleItemIndex(TViewModel item, int startIndex)
@@ -607,7 +641,6 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
             var id = toRemove[i];
             if (!_vmCache.Remove(id, out var vm)) continue;
 
-            _vmToId.Remove(vm);
             vm.Dispose();
         }
     }
@@ -625,7 +658,6 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
             vm.Dispose();
 
         _vmCache.Clear();
-        _vmToId.Clear();
     }
 
     #endregion
@@ -641,7 +673,6 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
 
         if (_vmCache.Remove(id, out var vm))
         {
-            _vmToId.Remove(vm);
             Items.Remove(vm);
             vm.Dispose();
         }

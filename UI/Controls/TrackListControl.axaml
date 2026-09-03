@@ -78,7 +78,7 @@
 
     <StackPanel IsVisible="{Binding !IsLoading, ElementName=Root}">
 
-        <!-- ═══ ITEMS REPEATER ═══ -->
+        <!-- ITEMS REPEATER -->
         <ir:ItemsRepeater x:Name="MainRepeater"
             ItemsSource="{Binding Items, ElementName=Root}"
             DragDrop.AllowDrop="{Binding EnableReordering, ElementName=Root}"
@@ -104,9 +104,8 @@
                         PointerMoved="OnItemPointerMoved"
                         PointerReleased="OnItemPointerReleased">
 
-                        <!-- Колонки: Обложка, Текст(тянется), Иконки кэша, Лайк,
-                        Длительность/Опции(совмещенный слот) -->
-                        <Grid ColumnDefinitions="Auto, *, Auto, Auto, 56">
+                        <!-- Оптимизированные фиксированные колонки: 52px, *, 44px, 40px, 56px -->
+                        <Grid ColumnDefinitions="52, *, 44, 40, 56">
 
                             <!-- COL 0: ОБЛОЖКА / КНОПКА PLAY -->
                             <Button Grid.Column="0"
@@ -146,12 +145,14 @@
                                 <TextBlock
                                     Text="{Binding Title}"
                                     Classes="track-title"
+                                    TextWrapping="NoWrap"
                                     TextTrimming="CharacterEllipsis"
                                     MaxLines="1"
                                     FontSize="14" />
                                 <TextBlock
                                     Text="{Binding Author}"
                                     Foreground="{DynamicResource TextMutedBrush}"
+                                    TextWrapping="NoWrap"
                                     TextTrimming="CharacterEllipsis"
                                     MaxLines="1"
                                     FontSize="12" />
@@ -169,18 +170,9 @@
                                     HorizontalAlignment="Center"
                                     VerticalAlignment="Center"
                                     Foreground="{DynamicResource AccentBrush}"
-                                    Data="{StaticResource Icon.CheckCircle}"
-                                    IsVisible="{Binding ShowDownloadedIcon}"
-                                    ToolTip.Tip="{Binding L[Track_Downloaded]}" />
-
-                                <PathIcon
-                                    Width="16" Height="16"
-                                    HorizontalAlignment="Center"
-                                    VerticalAlignment="Center"
-                                    Foreground="{DynamicResource AccentBrush}"
-                                    Data="{StaticResource Icon.CloudCheck}"
-                                    IsVisible="{Binding ShowCachedIcon}"
-                                    ToolTip.Tip="{Binding L[Track_Cached]}" />
+                                    Data="{Binding CacheIconGeometry}"
+                                    IsVisible="{Binding HasCacheIcon}"
+                                    ToolTip.Tip="{Binding CacheIconTooltip}" />
 
                                 <Border
                                     Width="32" Height="3"
@@ -203,7 +195,7 @@
                                 </Border>
                             </Panel>
 
-                            <!-- COL 3: ЛАЙК (Иконка подменяется стилем) -->
+                            <!-- COL 3: ЛАЙК -->
                             <Button Grid.Column="3"
                                 Classes="icon-btn like-btn"
                                 Classes.is-liked="{Binding IsLiked}"
@@ -215,8 +207,7 @@
                                 <PathIcon Width="16" Height="16" IsHitTestVisible="False" />
                             </Button>
 
-                            <!-- COL 4: ВРЕМЯ И ОПЦИИ (Лежат в одном слоте и замещают друг друга при
-                            наведении) -->
+                            <!-- COL 4: ВРЕМЯ И ОПЦИИ -->
                             <TextBlock Grid.Column="4"
                                 Classes="duration-text"
                                 Width="46"
@@ -248,7 +239,7 @@
             </ir:ItemsRepeater.ItemTemplate>
         </ir:ItemsRepeater>
 
-        <!-- ═══ FOOTER ═══ -->
+        <!-- FOOTER -->
         <StackPanel Margin="0,8,0,80"
             DataContext="{Binding #Root}"
             IsHitTestVisible="False"
@@ -267,15 +258,14 @@
                     Classes="loading-dot3" />
             </StackPanel>
 
-            <Border IsVisible="{Binding IsFooterVisible}"
+            <StackPanel Orientation="Horizontal" Spacing="8"
+                IsVisible="{Binding IsFooterVisible}"
                 Margin="0,16,0,32" HorizontalAlignment="Center" Opacity="0.5">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <PathIcon Data="{StaticResource Icon.CheckCircle}" Width="16" Height="16"
-                        Foreground="{DynamicResource TextMutedBrush}" />
-                    <TextBlock Text="{Binding EndOfListText}"
-                        Foreground="{DynamicResource TextMutedBrush}" FontSize="13" />
-                </StackPanel>
-            </Border>
+                <PathIcon Data="{StaticResource Icon.CheckCircle}" Width="16" Height="16"
+                    Foreground="{DynamicResource TextMutedBrush}" />
+                <TextBlock Text="{Binding EndOfListText}"
+                    Foreground="{DynamicResource TextMutedBrush}" FontSize="13" />
+            </StackPanel>
         </StackPanel>
     </StackPanel>
 </UserControl>

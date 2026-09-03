@@ -445,9 +445,13 @@ public sealed partial class PlaylistViewModel : TrackListReorderableViewModel, I
     }
 
     /// <summary>
-    /// Загружает либо мягко обновляет плейлист.
-    /// При <paramref name="showLoader"/> = false не поднимает loading-state.
+    /// Загружает либо мягко обновляет плейлист с детерминированным разделением фаз навигации.
+    /// Выборка из SQLite выполняется в пуле потоков параллельно с анимацией перехода,
+    /// а заливка коллекции в UI-поток происходит строго после завершения анимации.
     /// </summary>
+    /// <param name="playlistId">Идентификатор целевого плейлиста.</param>
+    /// <param name="showLoader">Флаг принудительного отображения состояния загрузки.</param>
+    /// <param name="ct">Внешний токен отмены операции.</param>
     private async Task LoadPlaylistAsync(string playlistId, bool showLoader, CancellationToken ct)
     {
         var loadCts = ReplacePlaylistLoadCts(ct);
@@ -461,63 +465,46 @@ public sealed partial class PlaylistViewModel : TrackListReorderableViewModel, I
         {
             loadCt.ThrowIfCancellationRequested();
 
-            var playlist = await LibService.GetPlaylistAsync(playlistId);
-            loadCt.ThrowIfCancellationRequested();
-            if (playlist is null) return;
+            // ФАЗА 1: Параллельное чтение из SQLite в ThreadPool во время анимации перехода
+            var payload = await Task.Run(async () =>
+            {
+                var playlist = await LibService.GetPlaylistAsync(playlistId).ConfigureAwait(false);
+                if (playlist is null)
+                    return null;
 
-            _currentPlaylist = playlist;
+                loadCt.ThrowIfCancellationRequested();
+                var trackIds = await LibService.GetPlaylistTrackIdsAsync(playlistId, loadCt).ConfigureAwait(false);
 
-            // Metadata
-            PlaylistName = playlist.Name;
-            ThumbnailUrl = playlist.ThumbnailUrl;
-            Description = playlist.Description;
-            IsLikedPlaylist = playlistId == LibraryService.LikedPlaylistId;
+                loadCt.ThrowIfCancellationRequested();
+                var totalDuration = await LibService.GetPlaylistTotalDurationAsync(playlistId, loadCt).ConfigureAwait(false);
 
-            // Author & Ownership
-            AuthorName = playlist.Author;
-            ShowAuthor = !string.IsNullOrEmpty(playlist.Author);
-            IsReadOnly = playlist.IsReadOnly;
-            CanEdit = playlist.IsEditable;
-            IsPrivate = playlist.Visibility == PlaylistVisibility.Private;
-            IsUnlisted = playlist.Visibility == PlaylistVisibility.Unlisted;
+                loadCt.ThrowIfCancellationRequested();
+                var tracks = await LibService.GetPlaylistTracksAsync(playlistId, loadCt).ConfigureAwait(false);
 
-            // Cloud & Sync
-            IsTwoWaySynced = playlist.SyncMode == PlaylistSyncMode.TwoWaySync;
-            HasCloudSource = playlist.HasCloudLink
-                             || (IsLikedPlaylist && _auth.IsAuthenticated);
-            CanRefreshFromCloud = IsTwoWaySynced
-                                  || (IsLikedPlaylist && _auth.IsAuthenticated);
-            HasStatusChips = IsReadOnly || IsPrivate || IsUnlisted || HasCloudSource;
-            LastSyncedText = FormatRelativeTime(playlist.LastSyncedAtUtc);
+                return new PlaylistLoadPayload(playlist, trackIds, totalDuration, tracks);
+            }, loadCt).ConfigureAwait(false);
 
-            // Stats: views & date
-            FormattedViewCount = FormatViewCount(playlist.ViewCount);
-            FormattedReleaseDate = FormatReleaseDate(playlist.ReleaseDate);
+            if (payload is null || loadCt.IsCancellationRequested)
+                return;
 
-            // Derived (одним блоком в конце)
-            this.RaisePropertyChanged(nameof(PlaylistYoutubeUrl));
-            HasYoutubeLink = PlaylistYoutubeUrl is not null;
-
-            // Tracks
-            var allIds = await LibService.GetPlaylistTrackIdsAsync(playlistId, ct);
+            // БАРЬЕР: Дожидаемся завершения анимации CrossFade (130 мс), не блокируя пул
+            await WaitForTransitionAsync(loadCt).ConfigureAwait(false);
             loadCt.ThrowIfCancellationRequested();
 
-            _playlistTrackIds = new HashSet<string>(allIds, StringComparer.Ordinal);
-            TrackCount = allIds.Count;
-            this.RaisePropertyChanged(nameof(FormattedTrackCount));
+            // ФАЗА 2: Маршалинг в UI-поток после окончания анимации
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (loadCt.IsCancellationRequested)
+                    return;
 
-            TotalDuration = await LibService.GetPlaylistTotalDurationAsync(playlistId, ct);
-            loadCt.ThrowIfCancellationRequested();
+                ApplyLoadedPayload(payload);
+                InitializeWithPreloadedData(payload.TrackIds, payload.Tracks);
 
-            FormatDuration();
+                _ = LoadHeaderGradientAsync();
+                _ = HydrateCacheStatusAsync(loadCt);
 
-            await InitializeAsync(allIds, loadCt);
-            loadCt.ThrowIfCancellationRequested();
-
-            _ = LoadHeaderGradientAsync();
-            _ = HydrateCacheStatusAsync(loadCt);
-
-            UpdatePlaybackState();
+                UpdatePlaybackState();
+            }, DispatcherPriority.Normal, loadCt);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -529,6 +516,48 @@ public sealed partial class PlaylistViewModel : TrackListReorderableViewModel, I
             if (ReferenceEquals(_playlistLoadCts, loadCts))
                 IsLoading = false;
         }
+    }
+
+    /// <summary>
+    /// Применяет метаданные загруженного плейлиста к презентационному слою.
+    /// Вызывается строго на UI-потоке.
+    /// </summary>
+    /// <param name="payload">Загруженный пакет данных из SQLite.</param>
+    private void ApplyLoadedPayload(PlaylistLoadPayload payload)
+    {
+        var playlist = payload.Playlist;
+        _currentPlaylist = playlist;
+
+        PlaylistName = playlist.Name;
+        ThumbnailUrl = playlist.ThumbnailUrl;
+        Description = playlist.Description;
+        IsLikedPlaylist = _currentPlaylistId == LibraryService.LikedPlaylistId;
+
+        AuthorName = playlist.Author;
+        ShowAuthor = !string.IsNullOrEmpty(playlist.Author);
+        IsReadOnly = playlist.IsReadOnly;
+        CanEdit = playlist.IsEditable;
+        IsPrivate = playlist.Visibility == PlaylistVisibility.Private;
+        IsUnlisted = playlist.Visibility == PlaylistVisibility.Unlisted;
+
+        IsTwoWaySynced = playlist.SyncMode == PlaylistSyncMode.TwoWaySync;
+        HasCloudSource = playlist.HasCloudLink || (IsLikedPlaylist && _auth.IsAuthenticated);
+        CanRefreshFromCloud = IsTwoWaySynced || (IsLikedPlaylist && _auth.IsAuthenticated);
+        HasStatusChips = IsReadOnly || IsPrivate || IsUnlisted || HasCloudSource;
+        LastSyncedText = FormatRelativeTime(playlist.LastSyncedAtUtc);
+
+        FormattedViewCount = FormatViewCount(playlist.ViewCount);
+        FormattedReleaseDate = FormatReleaseDate(playlist.ReleaseDate);
+
+        this.RaisePropertyChanged(nameof(PlaylistYoutubeUrl));
+        HasYoutubeLink = PlaylistYoutubeUrl is not null;
+
+        _playlistTrackIds = new HashSet<string>(payload.TrackIds, StringComparer.Ordinal);
+        TrackCount = payload.TrackIds.Count;
+        this.RaisePropertyChanged(nameof(FormattedTrackCount));
+
+        TotalDuration = payload.TotalDuration;
+        FormatDuration();
     }
 
     private async Task LoadHeaderGradientAsync()
@@ -993,4 +1022,10 @@ public sealed partial class PlaylistViewModel : TrackListReorderableViewModel, I
     }
 
     #endregion
+
+    private sealed record PlaylistLoadPayload(
+    Core.Models.Playlist Playlist,
+    List<string> TrackIds,
+    TimeSpan TotalDuration,
+    List<TrackInfo> Tracks);
 }

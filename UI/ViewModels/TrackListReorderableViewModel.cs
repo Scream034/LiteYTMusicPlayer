@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Reactive.Linq;
 using LMP.UI.Features.Shared;
 using ReactiveUI;
@@ -218,6 +219,9 @@ public abstract class TrackListReorderableViewModel
     #region ReorderableViewModel Overrides
 
     protected sealed override string GetItemId(TrackInfo item) => item.Id;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    protected sealed override string GetViewModelId(TrackItemViewModel vm) => vm.Id;
 
     protected sealed override bool MatchesFilter(TrackInfo item, string query) =>
         TrackFilters.MatchesTitleOrAuthor(item, query);

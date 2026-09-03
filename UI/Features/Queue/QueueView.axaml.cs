@@ -1,4 +1,5 @@
-﻿using Avalonia.Controls;
+﻿using Avalonia;
+using Avalonia.Controls;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
 using LMP.UI.Controls;
@@ -13,8 +14,26 @@ public partial class QueueView : UserControl
 
         AttachedToVisualTree += (_, _) =>
         {
-            // Откладываем скролл до момента, когда коллекция отрисована и измерена контейнером
-            Dispatcher.UIThread.Post(ScrollToPlayingTrack, DispatcherPriority.Loaded);
+            var trackList = this.FindControl<TrackListControl>("QueueTrackList");
+            if (trackList == null) return;
+
+            if (!trackList.IsLoading)
+            {
+                Dispatcher.UIThread.Post(ScrollToPlayingTrack, DispatcherPriority.Loaded);
+            }
+            else
+            {
+                IDisposable? sub = null;
+                sub = trackList.GetObservable(TrackListControl.IsLoadingProperty)
+                    .Subscribe(isLoading =>
+                    {
+                        if (!isLoading)
+                        {
+                            sub?.Dispose();
+                            Dispatcher.UIThread.Post(ScrollToPlayingTrack, DispatcherPriority.Loaded);
+                        }
+                    });
+            }
         };
     }
 

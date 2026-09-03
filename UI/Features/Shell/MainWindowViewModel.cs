@@ -22,7 +22,7 @@ public partial class MainWindowViewModel : ViewModelBase
     private readonly IServiceProvider _services;
     private readonly Dictionary<string, ViewModelBase> _pageCache = new(StringComparer.Ordinal);
 
-    // ═══ VERSION INFO ═══
+    // VERSION INFO
     [Reactive] public partial bool IsVersionInfoVisible { get; set; } = true;
     public static string VersionDisplay => G.Build.DisplayVersion;
     public static string GitHashDisplay => G.Build.GitHash;
@@ -37,22 +37,22 @@ public partial class MainWindowViewModel : ViewModelBase
     public ICommand ToggleVersionInfoCommand { get; }
     public ICommand OpenGitHubCommand { get; }
 
-    // ═══ NAVIGATION ═══
+    // NAVIGATION
     [Reactive] public partial ViewModelBase? CurrentPage { get; private set; }
     [Reactive] public partial PlayerBarViewModel PlayerBar { get; private set; }
     [Reactive] public partial string CurrentPageName { get; private set; } = "";
     [Reactive] public partial bool IsNavigationLocked { get; private set; }
     [Reactive] public partial string NavigationLockReason { get; private set; } = "";
 
-    // ═══ NOTIFICATIONS ═══
+    // NOTIFICATIONS
     [Reactive] public partial NotificationButtonViewModel NotificationButton { get; private set; }
     [Reactive] public partial NotificationPanelViewModel NotificationPanel { get; private set; }
     [Reactive] public partial ToastOverlayViewModel ToastOverlay { get; private set; }
 
-    // ═══ DIALOG HOST ═══
+    // DIALOG HOST
     [Reactive] public partial DialogHostViewModel DialogHost { get; private set; }
 
-    private const int DeferredLoadDelayMs = 180;
+    private const int DeferredLoadDelayMs = 140;
     private static readonly TimeSpan StartupAuthValidationTtl = TimeSpan.FromHours(4);
 
     private readonly CancellationTokenSource _lifetimeCts = new();

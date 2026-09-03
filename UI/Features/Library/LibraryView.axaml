@@ -108,7 +108,7 @@
         <!-- Карточка-кнопка плейлиста (размер оптимизирован до 220px для 6 колонок на FHD) -->
         <Style Selector="Button.playlist-card-inner">
             <Setter Property="Width" Value="220" />
-            <Setter Property="Height" Value="320" /> <!-- Идеальное распределение пропорций для обложек 1:1 -->
+            <Setter Property="Height" Value="320" />
             <Setter Property="Margin" Value="10" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="Background" Value="Transparent" />
@@ -116,31 +116,27 @@
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="8" />
             <Setter Property="ClipToBounds" Value="True" />
-            <Setter Property="Opacity" Value="0" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
             <Setter Property="VerticalContentAlignment" Value="Stretch" />
             <Setter Property="Transitions">
                 <Transitions>
                     <BrushTransition Property="BorderBrush" Duration="0:0:0.15" />
-                    <DoubleTransition Property="Opacity" Duration="0:0:0.18" Easing="CubicEaseOut" />
                 </Transitions>
             </Setter>
         </Style>
 
-        <Style Selector="Button.playlist-card-inner.visible">
-            <Setter Property="Opacity" Value="1" />
-        </Style>
-
         <!-- Полный запрет на фоновое окрашивание карточки при любых состояниях наведения/клика -->
-        <Style Selector="Button.playlist-card-inner:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+        <Style
+            Selector="Button.playlist-card-inner:pointerover /template/ ContentPresenter#PART_ContentPresenter,
                          Button.playlist-card-inner.is-active /template/ ContentPresenter#PART_ContentPresenter,
                          Button.playlist-card-inner.menu-open /template/ ContentPresenter#PART_ContentPresenter">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
         </Style>
 
-        <Style Selector="Button.playlist-card-inner:pointerover,
+        <Style
+            Selector="Button.playlist-card-inner:pointerover,
                          Button.playlist-card-inner.is-active,
                          Button.playlist-card-inner.menu-open">
             <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
@@ -159,7 +155,8 @@
         </Style>
 
         <!-- Окрашивание разделительной линии во всех трех активных состояниях -->
-        <Style Selector="Button.playlist-card-inner:pointerover Border.card-info,
+        <Style
+            Selector="Button.playlist-card-inner:pointerover Border.card-info,
                          Button.playlist-card-inner.is-active Border.card-info,
                          Button.playlist-card-inner.menu-open Border.card-info">
             <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
@@ -177,7 +174,8 @@
         </Style>
 
         <!-- Подсветка текста заголовка во всех трех активных состояниях -->
-        <Style Selector="Button.playlist-card-inner:pointerover TextBlock.card-title,
+        <Style
+            Selector="Button.playlist-card-inner:pointerover TextBlock.card-title,
                          Button.playlist-card-inner.is-active TextBlock.card-title,
                          Button.playlist-card-inner.menu-open TextBlock.card-title">
             <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
@@ -230,7 +228,8 @@
 
                     <Border Classes="stat-block"
                         ToolTip.Tip="{Binding L[Library_Tip_PlaylistCount], FallbackValue=''}">
-                        <!-- Hit-testing отключен на внутреннем контенте для оптимизации производительности -->
+                        <!-- Hit-testing отключен на внутреннем контенте для оптимизации
+                        производительности -->
                         <StackPanel Orientation="Horizontal"
                             Spacing="8"
                             VerticalAlignment="Center"
@@ -326,8 +325,11 @@
                         Classes="header-action-btn"
                         ToolTip.Tip="{Binding L[Library_SyncYoutube], FallbackValue=''}">
                         <Panel Width="20" Height="20" IsHitTestVisible="False">
-                            <PathIcon Data="{StaticResource Icon.CloudSync}" IsVisible="{Binding !IsSyncing}" />
-                            <PathIcon Data="{StaticResource Icon.Cloud}" Foreground="{DynamicResource AccentBrush}" IsVisible="{Binding IsSyncing}" />
+                            <PathIcon Data="{StaticResource Icon.CloudSync}"
+                                IsVisible="{Binding !IsSyncing}" />
+                            <PathIcon Data="{StaticResource Icon.Cloud}"
+                                Foreground="{DynamicResource AccentBrush}"
+                                IsVisible="{Binding IsSyncing}" />
                         </Panel>
                     </Button>
 
@@ -377,7 +379,8 @@
         <Grid Grid.Row="2"
             Margin="0,8,0,0">
 
-            <!-- TRUTHFUL SKELETON (Со скруглением картинок, пропорции 220x220, хит-тестинг отключен) -->
+            <!-- TRUTHFUL SKELETON (Со скруглением картинок, пропорции 220x220, хит-тестинг
+            отключен) -->
             <ScrollViewer HorizontalScrollBarVisibility="Disabled">
                 <ScrollViewer.IsVisible>
                     <MultiBinding Converter="{x:Static BoolConverters.Or}">
@@ -390,14 +393,21 @@
                     HorizontalAlignment="Center"
                     Margin="24,4,24,100"
                     IsHitTestVisible="False">
-                    
+
                     <Border Classes="playlist-skeleton" Margin="10">
                         <Grid RowDefinitions="220, *">
-                            <Border Grid.Row="0" Background="{DynamicResource BgSkeletonBrush}" CornerRadius="7,7,0,0" ClipToBounds="True" />
+                            <Border Grid.Row="0" Background="{DynamicResource BgSkeletonBrush}"
+                                CornerRadius="7,7,0,0" ClipToBounds="True" />
                             <Border Grid.Row="1" Classes="card-info" Padding="12,10,12,14">
                                 <StackPanel Spacing="8" VerticalAlignment="Center">
-                                    <Border Height="12" Width="150" HorizontalAlignment="Left" CornerRadius="4" Background="{DynamicResource BgSkeletonDeepBrush}" Classes="skeleton" />
-                                    <Border Height="10" Width="90" HorizontalAlignment="Left" CornerRadius="3" Background="{DynamicResource BgSkeletonDeepBrush}" Classes="skeleton" />
+                                    <Border Height="12" Width="150" HorizontalAlignment="Left"
+                                        CornerRadius="4"
+                                        Background="{DynamicResource BgSkeletonDeepBrush}"
+                                        Classes="skeleton" />
+                                    <Border Height="10" Width="90" HorizontalAlignment="Left"
+                                        CornerRadius="3"
+                                        Background="{DynamicResource BgSkeletonDeepBrush}"
+                                        Classes="skeleton" />
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -405,11 +415,18 @@
 
                     <Border Classes="playlist-skeleton" Margin="10" Opacity="0.7">
                         <Grid RowDefinitions="220, *">
-                            <Border Grid.Row="0" Background="{DynamicResource BgSkeletonBrush}" CornerRadius="7,7,0,0" ClipToBounds="True" />
+                            <Border Grid.Row="0" Background="{DynamicResource BgSkeletonBrush}"
+                                CornerRadius="7,7,0,0" ClipToBounds="True" />
                             <Border Grid.Row="1" Classes="card-info" Padding="12,10,12,14">
                                 <StackPanel Spacing="8" VerticalAlignment="Center">
-                                    <Border Height="12" Width="130" HorizontalAlignment="Left" CornerRadius="4" Background="{DynamicResource BgSkeletonDeepBrush}" Classes="skeleton" />
-                                    <Border Height="10" Width="100" HorizontalAlignment="Left" CornerRadius="3" Background="{DynamicResource BgSkeletonDeepBrush}" Classes="skeleton" />
+                                    <Border Height="12" Width="130" HorizontalAlignment="Left"
+                                        CornerRadius="4"
+                                        Background="{DynamicResource BgSkeletonDeepBrush}"
+                                        Classes="skeleton" />
+                                    <Border Height="10" Width="100" HorizontalAlignment="Left"
+                                        CornerRadius="3"
+                                        Background="{DynamicResource BgSkeletonDeepBrush}"
+                                        Classes="skeleton" />
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -417,11 +434,18 @@
 
                     <Border Classes="playlist-skeleton" Margin="10" Opacity="0.5">
                         <Grid RowDefinitions="220, *">
-                            <Border Grid.Row="0" Background="{DynamicResource BgSkeletonBrush}" CornerRadius="7,7,0,0" ClipToBounds="True" />
+                            <Border Grid.Row="0" Background="{DynamicResource BgSkeletonBrush}"
+                                CornerRadius="7,7,0,0" ClipToBounds="True" />
                             <Border Grid.Row="1" Classes="card-info" Padding="12,10,12,14">
                                 <StackPanel Spacing="8" VerticalAlignment="Center">
-                                    <Border Height="12" Width="160" HorizontalAlignment="Left" CornerRadius="4" Background="{DynamicResource BgSkeletonDeepBrush}" Classes="skeleton" />
-                                    <Border Height="10" Width="80" HorizontalAlignment="Left" CornerRadius="3" Background="{DynamicResource BgSkeletonDeepBrush}" Classes="skeleton" />
+                                    <Border Height="12" Width="160" HorizontalAlignment="Left"
+                                        CornerRadius="4"
+                                        Background="{DynamicResource BgSkeletonDeepBrush}"
+                                        Classes="skeleton" />
+                                    <Border Height="10" Width="80" HorizontalAlignment="Left"
+                                        CornerRadius="3"
+                                        Background="{DynamicResource BgSkeletonDeepBrush}"
+                                        Classes="skeleton" />
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -429,11 +453,18 @@
 
                     <Border Classes="playlist-skeleton" Margin="10" Opacity="0.3">
                         <Grid RowDefinitions="220, *">
-                            <Border Grid.Row="0" Background="{DynamicResource BgSkeletonBrush}" CornerRadius="7,7,0,0" ClipToBounds="True" />
+                            <Border Grid.Row="0" Background="{DynamicResource BgSkeletonBrush}"
+                                CornerRadius="7,7,0,0" ClipToBounds="True" />
                             <Border Grid.Row="1" Classes="card-info" Padding="12,10,12,14">
                                 <StackPanel Spacing="8" VerticalAlignment="Center">
-                                    <Border Height="12" Width="120" HorizontalAlignment="Left" CornerRadius="4" Background="{DynamicResource BgSkeletonDeepBrush}" Classes="skeleton" />
-                                    <Border Height="10" Width="95" HorizontalAlignment="Left" CornerRadius="3" Background="{DynamicResource BgSkeletonDeepBrush}" Classes="skeleton" />
+                                    <Border Height="12" Width="120" HorizontalAlignment="Left"
+                                        CornerRadius="4"
+                                        Background="{DynamicResource BgSkeletonDeepBrush}"
+                                        Classes="skeleton" />
+                                    <Border Height="10" Width="95" HorizontalAlignment="Left"
+                                        CornerRadius="3"
+                                        Background="{DynamicResource BgSkeletonDeepBrush}"
+                                        Classes="skeleton" />
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -441,11 +472,18 @@
 
                     <Border Classes="playlist-skeleton" Margin="10" Opacity="0.15">
                         <Grid RowDefinitions="220, *">
-                            <Border Grid.Row="0" Background="{DynamicResource BgSkeletonBrush}" CornerRadius="7,7,0,0" ClipToBounds="True" />
+                            <Border Grid.Row="0" Background="{DynamicResource BgSkeletonBrush}"
+                                CornerRadius="7,7,0,0" ClipToBounds="True" />
                             <Border Grid.Row="1" Classes="card-info" Padding="12,10,12,14">
                                 <StackPanel Spacing="8" VerticalAlignment="Center">
-                                    <Border Height="12" Width="140" HorizontalAlignment="Left" CornerRadius="4" Background="{DynamicResource BgSkeletonDeepBrush}" Classes="skeleton" />
-                                    <Border Height="10" Width="85" HorizontalAlignment="Left" CornerRadius="3" Background="{DynamicResource BgSkeletonDeepBrush}" Classes="skeleton" />
+                                    <Border Height="12" Width="140" HorizontalAlignment="Left"
+                                        CornerRadius="4"
+                                        Background="{DynamicResource BgSkeletonDeepBrush}"
+                                        Classes="skeleton" />
+                                    <Border Height="10" Width="85" HorizontalAlignment="Left"
+                                        CornerRadius="3"
+                                        Background="{DynamicResource BgSkeletonDeepBrush}"
+                                        Classes="skeleton" />
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -453,11 +491,18 @@
 
                     <Border Classes="playlist-skeleton" Margin="10" Opacity="0.08">
                         <Grid RowDefinitions="220, *">
-                            <Border Grid.Row="0" Background="{DynamicResource BgSkeletonBrush}" CornerRadius="7,7,0,0" ClipToBounds="True" />
+                            <Border Grid.Row="0" Background="{DynamicResource BgSkeletonBrush}"
+                                CornerRadius="7,7,0,0" ClipToBounds="True" />
                             <Border Grid.Row="1" Classes="card-info" Padding="12,10,12,14">
                                 <StackPanel Spacing="8" VerticalAlignment="Center">
-                                    <Border Height="12" Width="130" HorizontalAlignment="Left" CornerRadius="4" Background="{DynamicResource BgSkeletonDeepBrush}" Classes="skeleton" />
-                                    <Border Height="10" Width="75" HorizontalAlignment="Left" CornerRadius="3" Background="{DynamicResource BgSkeletonDeepBrush}" Classes="skeleton" />
+                                    <Border Height="12" Width="130" HorizontalAlignment="Left"
+                                        CornerRadius="4"
+                                        Background="{DynamicResource BgSkeletonDeepBrush}"
+                                        Classes="skeleton" />
+                                    <Border Height="10" Width="75" HorizontalAlignment="Left"
+                                        CornerRadius="3"
+                                        Background="{DynamicResource BgSkeletonDeepBrush}"
+                                        Classes="skeleton" />
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -486,7 +531,7 @@
 
                         <ItemsControl.ItemTemplate>
                             <DataTemplate x:DataType="vm:PlaylistCardViewModel">
-                                
+
                                 <!-- Сплющенная карточка-кнопка (ширина 220px, высота 320px) -->
                                 <Button Classes="playlist-card-inner"
                                     Classes.visible="{Binding IsVisible}"
@@ -506,16 +551,19 @@
                                                 </MenuItem.Icon>
                                             </MenuItem>
 
-                                            <MenuItem Header="{Binding L[Playlist_Open], FallbackValue='Open'}"
+                                            <MenuItem
+                                                Header="{Binding L[Playlist_Open], FallbackValue='Open'}"
                                                 Command="{Binding OpenCommand}">
                                                 <MenuItem.Icon>
-                                                    <PathIcon Data="{StaticResource Icon.FolderOpen}"
+                                                    <PathIcon
+                                                        Data="{StaticResource Icon.FolderOpen}"
                                                         Width="16"
                                                         Height="16" />
                                                 </MenuItem.Icon>
                                             </MenuItem>
 
-                                            <MenuItem Header="{Binding L[EditPlaylist_Title], FallbackValue='Edit'}"
+                                            <MenuItem
+                                                Header="{Binding L[EditPlaylist_Title], FallbackValue='Edit'}"
                                                 Command="{Binding EditCommand}"
                                                 IsVisible="{Binding CanEdit}">
                                                 <MenuItem.Icon>
@@ -525,19 +573,23 @@
                                                 </MenuItem.Icon>
                                             </MenuItem>
 
-                                            <MenuItem Header="{Binding L[Queue_AddAll], FallbackValue='Add to queue'}"
+                                            <MenuItem
+                                                Header="{Binding L[Queue_AddAll], FallbackValue='Add to queue'}"
                                                 Command="{Binding AddToQueueCommand}">
                                                 <MenuItem.Icon>
-                                                    <PathIcon Data="{StaticResource Icon.PlaylistPlus}"
+                                                    <PathIcon
+                                                        Data="{StaticResource Icon.PlaylistPlus}"
                                                         Width="16"
                                                         Height="16" />
                                                 </MenuItem.Icon>
                                             </MenuItem>
 
-                                            <MenuItem Header="{Binding L[Track_CopyLink], FallbackValue='Copy link'}"
+                                            <MenuItem
+                                                Header="{Binding L[Track_CopyLink], FallbackValue='Copy link'}"
                                                 Command="{Binding CopyLinkCommand}">
                                                 <MenuItem.Icon>
-                                                    <PathIcon Data="{StaticResource Icon.LinkVariant}"
+                                                    <PathIcon
+                                                        Data="{StaticResource Icon.LinkVariant}"
                                                         Width="16"
                                                         Height="16" />
                                                 </MenuItem.Icon>
@@ -545,7 +597,8 @@
 
                                             <Separator Classes="menu-separator" />
 
-                                            <MenuItem Header="{Binding L[Button_Delete], FallbackValue='Delete'}"
+                                            <MenuItem
+                                                Header="{Binding L[Button_Delete], FallbackValue='Delete'}"
                                                 Command="{Binding DeleteCommand}"
                                                 IsVisible="{Binding CanDelete}"
                                                 Classes="danger">
@@ -560,7 +613,8 @@
 
                                     <Grid RowDefinitions="220,*">
 
-                                        <!-- COVER AREA (Скругление углов через Border, хит-тестинг отключен для оптимизации) -->
+                                        <!-- COVER AREA (Скругление углов через Border, хит-тестинг
+                                        отключен для оптимизации) -->
                                         <Border Grid.Row="0"
                                             CornerRadius="7,7,0,0"
                                             ClipToBounds="True"
@@ -568,7 +622,8 @@
                                             Margin="0">
                                             <Grid>
                                                 <!-- 1. Изображение -->
-                                                <Image controls:SmartImage.Source="{Binding ThumbnailUrl}"
+                                                <Image
+                                                    controls:SmartImage.Source="{Binding ThumbnailUrl}"
                                                     controls:SmartImage.Quality="High"
                                                     Stretch="UniformToFill"
                                                     HorizontalAlignment="Stretch"
@@ -577,11 +632,13 @@
                                                     IsVisible="{Binding HasThumbnail}" />
 
                                                 <!-- 2. Плейсхолдер -->
-                                                <Border Background="{DynamicResource BgSkeletonBrush}"
+                                                <Border
+                                                    Background="{DynamicResource BgSkeletonBrush}"
                                                     IsVisible="{Binding ShowPlaceholder}"
                                                     HorizontalAlignment="Stretch"
                                                     VerticalAlignment="Stretch">
-                                                    <PathIcon Data="{StaticResource Icon.PlaylistMusic}"
+                                                    <PathIcon
+                                                        Data="{StaticResource Icon.PlaylistMusic}"
                                                         Width="72"
                                                         Height="72"
                                                         Foreground="{DynamicResource TextMutedBrush}"
@@ -589,7 +646,8 @@
                                                         VerticalAlignment="Center" />
                                                 </Border>
 
-                                                <!-- 3. Карточка любимых треков (Солидный фон, без градиента, 220x220px) -->
+                                                <!-- 3. Карточка любимых треков (Солидный фон, без
+                                                градиента, 220x220px) -->
                                                 <Border IsVisible="{Binding IsLikedPlaylist}"
                                                     Background="{DynamicResource BgSkeletonBrush}"
                                                     HorizontalAlignment="Stretch"
@@ -605,7 +663,8 @@
                                             </Grid>
                                         </Border>
 
-                                        <!-- INFO AREA (Высота 100px, нижний отступ Padding 14px обеспечивает свободу тексту) -->
+                                        <!-- INFO AREA (Высота 100px, нижний отступ Padding 14px
+                                        обеспечивает свободу тексту) -->
                                         <Border Grid.Row="1"
                                             Classes="card-info"
                                             Padding="12,10,12,14">
@@ -617,7 +676,8 @@
                                                     TextTrimming="CharacterEllipsis"
                                                     IsHitTestVisible="False" />
 
-                                                <!-- Элементы с ToolTip.Tip сохраняют IsHitTestVisible="True" для работы подсказок -->
+                                                <!-- Элементы с ToolTip.Tip сохраняют
+                                                IsHitTestVisible="True" для работы подсказок -->
                                                 <TextBlock Text="{Binding AuthorDisplayText}"
                                                     FontSize="11"
                                                     Foreground="{DynamicResource TextMutedBrush}"
@@ -653,7 +713,8 @@
                                                                                     FallbackValue='',
                                                                                     TargetNullValue=''}" />
 
-                                                    <PathIcon Data="{StaticResource Icon.CloudCheck}"
+                                                    <PathIcon
+                                                        Data="{StaticResource Icon.CloudCheck}"
                                                         Width="12"
                                                         Height="12"
                                                         Foreground="{DynamicResource TextMutedBrush}"

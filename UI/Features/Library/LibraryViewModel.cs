@@ -25,8 +25,6 @@ namespace LMP.UI.Features.Library;
 /// </summary>
 public sealed partial class LibraryViewModel : ViewModelBase, ISmoothTransitionViewModel
 {
-    private const int NavigationDebounceMs = 64;
-
     #region Зависимости
 
     private readonly AudioEngine _audio;
@@ -156,7 +154,9 @@ public sealed partial class LibraryViewModel : ViewModelBase, ISmoothTransitionV
     /// <inheritdoc />
     public void PrepareForTransition()
     {
-        IsContentReady = false; // Скрываем тяжелые карточки плейлистов перед переходом
+        // Если данные уже в памяти, НЕ сбрасываем контент в скелетон — сохраняем плавность
+        if (!_isDataLoaded)
+            IsContentReady = false;
     }
 
     #endregion
@@ -174,13 +174,16 @@ public sealed partial class LibraryViewModel : ViewModelBase, ISmoothTransitionV
             return;
         }
 
-        await Task.Delay(NavigationDebounceMs).ConfigureAwait(false);
-        if (_isDisposed) return;
+        // Загрузка в фоне без блокировки UI-потока
+        await LoadPlaylistsAsync().ConfigureAwait(false);
 
-        await LoadPlaylistsAsync();
-        _isDataLoaded = true;
-        _loadedOwnerId = _auth.State.DisplayId;
-        IsContentReady = true;
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (_isDisposed) return;
+            _isDataLoaded = true;
+            _loadedOwnerId = _auth.State.DisplayId;
+            IsContentReady = true;
+        });
     }
 
     #endregion
@@ -910,12 +913,6 @@ public sealed partial class LibraryViewModel : ViewModelBase, ISmoothTransitionV
     #region Полная загрузка
 
     /// <summary>
-    /// Константы батчинга для UI-Yielding.
-    /// </summary>
-    private const int InitialBatchSize = 12;  // Первые N карточек — мгновенно
-    private const int BatchSize = 4;          // Последующие батчи
-
-    /// <summary>
     /// Полная перезагрузка списка плейлистов с diff-алгоритмом и UI-Yielding.
     /// 
     /// <para><b>Оптимизация рендера:</b></para>
@@ -936,7 +933,10 @@ public sealed partial class LibraryViewModel : ViewModelBase, ISmoothTransitionV
 
         IsStatsVisible = false;
 
-        var allPlaylistsWithCounts = await _library.GetAllPlaylistsWithCountsAsync();
+        // Выборка из SQLite строго в пуле потоков
+        var allPlaylistsWithCounts = await Task.Run(
+            () => _library.GetAllPlaylistsWithCountsAsync(), ct).ConfigureAwait(false);
+
         if (_isDisposed || ct.IsCancellationRequested) return;
 
         var sorted = allPlaylistsWithCounts
@@ -945,87 +945,46 @@ public sealed partial class LibraryViewModel : ViewModelBase, ISmoothTransitionV
             .ThenBy(x => x.Playlist.Name)
             .ToList();
 
-        var existingDict = Playlists.ToDictionary(vm => vm.Id);
-        var newIdSet = new HashSet<string>(sorted.Select(x => x.Playlist.Id));
-
-        var toRemove = Playlists.Where(vm => !newIdSet.Contains(vm.Id)).ToList();
-        foreach (var vm in toRemove)
-        {
-            vm.Dispose();
-            Playlists.Remove(vm);
-        }
-
-        var newItems = new List<(PlaylistCardViewModel vm, int targetIndex)>();
-
-        for (int i = 0; i < sorted.Count; i++)
-        {
-            var (playlist, trackCount) = sorted[i];
-
-            if (existingDict.TryGetValue(playlist.Id, out var existingVm))
-            {
-                existingVm.UpdateFrom(playlist, trackCount);
-
-                int currentIndex = Playlists.IndexOf(existingVm);
-                if (currentIndex != i && currentIndex >= 0 && i < Playlists.Count)
-                {
-                    Playlists.Move(currentIndex, Math.Min(i, Playlists.Count - 1));
-                }
-            }
-            else
-            {
-                var vm = CreatePlaylistCardVm(playlist, trackCount);
-                newItems.Add((vm, i));
-            }
-        }
-
-        foreach (var (vm, targetIndex) in newItems)
+        // Переключение на UI-поток только для обновления ObservableCollection
+        await Dispatcher.UIThread.InvokeAsync(() =>
         {
             if (ct.IsCancellationRequested || _isDisposed) return;
 
-            if (targetIndex >= Playlists.Count)
-                Playlists.Add(vm);
-            else
-                Playlists.Insert(targetIndex, vm);
-        }
+            var existingDict = Playlists.ToDictionary(vm => vm.Id);
+            var newIdSet = new HashSet<string>(sorted.Select(x => x.Playlist.Id));
 
-        if (newItems.Count > 0)
-        {
-            int initialBatch = Math.Min(newItems.Count, InitialBatchSize);
-            for (int i = 0; i < initialBatch; i++)
+            for (int i = Playlists.Count - 1; i >= 0; i--)
             {
-                newItems[i].vm.Show();
-            }
-
-            if (newItems.Count > initialBatch)
-            {
-                int remaining = newItems.Count - initialBatch;
-                int batchCount = (remaining + BatchSize - 1) / BatchSize;
-
-                for (int batch = 0; batch < batchCount; batch++)
+                if (!newIdSet.Contains(Playlists[i].Id))
                 {
-                    if (ct.IsCancellationRequested || _isDisposed) return;
-
-                    await Dispatcher.UIThread.InvokeAsync(
-                        () => { },
-                        DispatcherPriority.Background);
-
-                    int startIdx = initialBatch + (batch * BatchSize);
-                    int endIdx = Math.Min(startIdx + BatchSize, newItems.Count);
-
-                    for (int i = startIdx; i < endIdx; i++)
-                    {
-                        if (ct.IsCancellationRequested || _isDisposed) return;
-                        newItems[i].vm.Show();
-                    }
+                    Playlists[i].Dispose();
+                    Playlists.RemoveAt(i);
                 }
             }
-        }
 
-        if (!_isDisposed && !ct.IsCancellationRequested)
-        {
+            for (int i = 0; i < sorted.Count; i++)
+            {
+                var (playlist, trackCount) = sorted[i];
+
+                if (existingDict.TryGetValue(playlist.Id, out var existingVm))
+                {
+                    existingVm.UpdateFrom(playlist, trackCount);
+                }
+                else
+                {
+                    var vm = CreatePlaylistCardVm(playlist, trackCount);
+                    vm.Show();
+
+                    if (i >= Playlists.Count)
+                        Playlists.Add(vm);
+                    else
+                        Playlists.Insert(i, vm);
+                }
+            }
+
             _loadedOwnerId = _auth.State.DisplayId;
             UpdateStatsInBackground();
-        }
+        }, DispatcherPriority.Normal, ct);
     }
 
     #endregion
