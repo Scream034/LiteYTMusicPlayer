@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace LMP.Core.Audio.Http;
 
-// --- Public Models ---
+// Public Models
 
 /// <summary>
 /// Статистика одного CDN-кластера YouTube.
@@ -12,7 +12,7 @@ public sealed class CdnClusterStats
 {
     /// <summary>
     /// Идентификатор кластера, извлечённый из hostname.
-    /// Пример: <c>sn-4g5ednle</c> из <c>rr3---sn-4g5ednle.googlevideo.com</c>.
+    /// Пример: <c>sn-4g5ednle</c> из <c>rrsn-4g5ednle.googlevideo.com</c>.
     /// </summary>
     public required string ClusterId { get; set; }
 
@@ -57,7 +57,7 @@ public sealed class CdnHostStatsEnvelope
     public DateTime LastSavedUtc { get; set; }
 }
 
-// --- Store ---
+// Store
 
 /// <summary>
 /// Персистентное хранилище статистики YouTube CDN-кластеров.
@@ -93,7 +93,7 @@ internal static class CdnHostStatsStore
     private static bool _dirty;
     private static DateTime _lastSaveTime = DateTime.MinValue;
 
-    // --- Load / Save ---
+    // Load / Save
 
     /// <summary>
     /// Загружает статистику с диска. Вызывается однократно при старте приложения.
@@ -105,10 +105,13 @@ internal static class CdnHostStatsStore
         try
         {
             var path = G.FilePath.CdnHostStats;
-            if (!File.Exists(path))
+            var json = AtomicFile.ReadTextWithFallback(path, out bool recovered);
+            if (string.IsNullOrWhiteSpace(json))
                 return;
 
-            var json = File.ReadAllText(path);
+            if (recovered)
+                Log.Warn("[CdnHostStats] Recovered CDN host stats from backup (.bak)");
+
             var envelope = JsonSerializer.Deserialize(
                 json,
                 AppJsonContext.DefaultCompact.CdnHostStatsEnvelope);
@@ -154,7 +157,7 @@ internal static class CdnHostStatsStore
             var json = JsonSerializer.Serialize(
                 snapshot,
                 AppJsonContext.DefaultCompact.CdnHostStatsEnvelope);
-            File.WriteAllText(G.FilePath.CdnHostStats, json);
+            AtomicFile.WriteText(G.FilePath.CdnHostStats, json, createBackup: true);
             Log.Debug($"[CdnHostStats] Saved {snapshot.Clusters.Count} cluster(s)");
         }
         catch (Exception ex)
@@ -164,7 +167,7 @@ internal static class CdnHostStatsStore
         }
     }
 
-    // --- Record ---
+    // Record
 
     /// <summary>
     /// Регистрирует успешное обращение к CDN-хосту.
@@ -173,7 +176,7 @@ internal static class CdnHostStatsStore
     /// Извлечение clusterId происходит ДО входа в Lock.
     /// </para>
     /// </summary>
-    /// <param name="host">Hostname CDN-ноды (<c>rr3---sn-xxx.googlevideo.com</c>).</param>
+    /// <param name="host">Hostname CDN-ноды (<c>rrsn-xxx.googlevideo.com</c>).</param>
     public static void RecordHit(string host)
     {
         var clusterId = ExtractClusterId(host);
@@ -236,7 +239,7 @@ internal static class CdnHostStatsStore
     }
 
 
-    // --- Query ---
+    // Query
 
     /// <summary>
     /// Возвращает EMA TTFB для кластера, к которому принадлежит хост.
@@ -255,7 +258,7 @@ internal static class CdnHostStatsStore
         }
     }
 
-    // --- Startup Warmup ---
+    // Startup Warmup
 
     /// <summary>
     /// Прогревает top-N CDN-кластеров при старте приложения.
@@ -330,7 +333,7 @@ internal static class CdnHostStatsStore
 
     }
 
-    // --- Periodic Save ---
+    // Periodic Save
 
     /// <summary>
     /// Сохраняет данные на диск если прошло достаточно времени с последнего сохранения.
@@ -349,7 +352,7 @@ internal static class CdnHostStatsStore
             Save();
     }
 
-    // --- Private Helpers ---
+    // Private Helpers
 
     private static (int MinHits, int MaxClusters) ComputeAdaptivePolicy(int totalHits) =>
         totalHits switch
@@ -411,7 +414,7 @@ internal static class CdnHostStatsStore
     /// Извлекает ClusterId из CDN-hostname. Zero-alloc через <see cref="ReadOnlySpan{T}"/>.
     /// </summary>
     /// <example>
-    /// <c>rr3---sn-4g5ednle.googlevideo.com</c> → <c>sn-4g5ednle</c>
+    /// <c>rrsn-4g5ednle.googlevideo.com</c> → <c>sn-4g5ednle</c>
     /// </example>
     internal static string? ExtractClusterId(string host)
     {

@@ -343,6 +343,9 @@
   "Notification_PlaybackDelay_Message": "Playback is delayed due to a slow or interrupted connection. Please wait...",
   "Notification_PlaybackDelay_Title": "Playback delayed",
   "Notification_ViewDetails": "View details",
+  "Notification_AlreadyRunning_Message": "Lite Music Player is already running in background or system tray.",
+  "Notification_AlreadyRunning_Question": "Lite Music Player is already running.\n\nWould you like to terminate the existing instance and start a new one?",
+  "Notification_AlreadyRunning_Title": "Already Running",
 
   "Player_Duration": "Duration: {0} / {1}",
   "Player_Loading_Duration": "Loading duration...",

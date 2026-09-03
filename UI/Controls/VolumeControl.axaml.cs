@@ -98,8 +98,6 @@ public partial class VolumeControl : UserControl
 
     #endregion
 
-    public event EventHandler? VolumeChangeCompleted;
-
     private bool _isDraggingVolume;
     private bool _isVolumePopupHovered;
     private bool _isVolumeButtonHovered;
@@ -171,14 +169,14 @@ public partial class VolumeControl : UserControl
             VolumeButton.BorderBrush = accentBrush;
             VolumeButton.Foreground = accentBrush;
             VolumeButton.BorderThickness = new Thickness(
-                VolumeConstants.ActiveBorderThickness, 
-                0, 
-                VolumeConstants.ActiveBorderThickness, 
+                VolumeConstants.ActiveBorderThickness,
+                0,
+                VolumeConstants.ActiveBorderThickness,
                 VolumeConstants.ActiveBorderThickness);
             VolumeButton.CornerRadius = new CornerRadius(
-                0, 
-                0, 
-                VolumeConstants.PopupCornerRadius, 
+                0,
+                0,
+                VolumeConstants.PopupCornerRadius,
                 VolumeConstants.PopupCornerRadius);
         }
         else
@@ -228,7 +226,6 @@ public partial class VolumeControl : UserControl
             _lastVolumeBeforeMute = Volume;
             Volume = 0;
         }
-        VolumeChangeCompleted?.Invoke(this, EventArgs.Empty);
     }
 
     public void OnVolumeScroll(object? sender, PointerWheelEventArgs e)
@@ -236,7 +233,6 @@ public partial class VolumeControl : UserControl
         int step = MaxVolume > 100 ? Math.Max(1, MaxVolume / 200) : 1;
         int delta = e.Delta.Y > 0 ? step : -step;
         Volume = Math.Clamp(Volume + delta, 0, MaxVolume);
-        VolumeChangeCompleted?.Invoke(this, EventArgs.Empty);
         e.Handled = true;
     }
 
@@ -278,7 +274,6 @@ public partial class VolumeControl : UserControl
     {
         if (!_isDraggingVolume) return;
         CompleteVolumeDrag(e.Pointer);
-        VolumeChangeCompleted?.Invoke(this, EventArgs.Empty);
         TryScheduleVolumePopupClose();
     }
 

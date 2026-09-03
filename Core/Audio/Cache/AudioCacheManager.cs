@@ -18,6 +18,19 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     private const int CurrentSchemaVersion = 4;
 
     /// <summary>
+    /// Известные стандартные комбинации форматов и битрейтов YouTube для восстановления файлов-сирот.
+    /// </summary>
+    private static readonly (AudioFormat Format, int Bitrate, AudioCodec Codec)[] KnownFormatProfiles =
+    [
+        (AudioFormat.WebM, 160, AudioCodec.Opus),
+        (AudioFormat.WebM, 70, AudioCodec.Opus),
+        (AudioFormat.WebM, 50, AudioCodec.Opus),
+        (AudioFormat.Mp4, 140, AudioCodec.Aac),
+        (AudioFormat.Mp4, 128, AudioCodec.Aac),
+        (AudioFormat.Ogg, 160, AudioCodec.Opus)
+    ];
+
+    /// <summary>
     /// Обёртка индекса кэша с версионированием схемы.
     /// </summary>
     public sealed class AudioCacheIndexEnvelope
@@ -79,6 +92,9 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
         if (trackMap.Count == 0) return;
 
+        // Self-Healing: Проверяем наличие файлов-сирот на диске для переданных треков
+        bool orphansRecovered = RecoverOrphansForTracks(trackMap.Keys);
+
         foreach (var (trackId, tracksList) in trackMap)
         {
             if (!_trackIndex.TryGetValue(trackId, out var keys)) continue;
@@ -102,6 +118,85 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
                     track.MarkAsCached(bestEntry.Format, bestEntry.Bitrate);
             }
         }
+
+        if (orphansRecovered)
+            _ = SaveIndexAsync();
+    }
+
+    /// <summary>
+    /// Сканирует диск на наличие файлов-сирот для переданных trackId и восстанавливает их в индекс.
+    /// </summary>
+    /// <param name="trackIds">Список идентификаторов треков.</param>
+    /// <returns><c>true</c>, если была восстановлена хотя бы одна запись.</returns>
+    public bool RecoverOrphansForTracks(IEnumerable<string> trackIds)
+    {
+        bool anyRecovered = false;
+
+        foreach (var rawTrackId in trackIds)
+        {
+            if (string.IsNullOrEmpty(rawTrackId)) continue;
+
+            string trackId = rawTrackId.StartsWith("yt_", StringComparison.Ordinal)
+                ? rawTrackId
+                : string.Concat("yt_", rawTrackId);
+
+            foreach (var (format, bitrate, codec) in KnownFormatProfiles)
+            {
+                string cacheKey = AudioSourceFactory.BuildCacheKey(trackId, format, bitrate);
+
+                // Если запись уже есть в памяти и валидна — пропускаем
+                if (_entries.TryGetValue(cacheKey, out var existing) && existing.IsComplete)
+                    continue;
+
+                string filePath = GetCachePath(cacheKey);
+
+                if (!File.Exists(filePath))
+                    continue;
+
+                try
+                {
+                    var fi = new FileInfo(filePath);
+                    // Минимальный порог размера файла (16 KB) для отсечения повреждённых огрызков
+                    if (fi.Length > 16384)
+                    {
+                        var entry = _entries.GetOrAdd(cacheKey, _ => new AudioCacheEntry
+                        {
+                            CacheKey = cacheKey,
+                            TrackId = trackId,
+                            OriginalUrl = string.Empty,
+                            TotalSize = fi.Length,
+                            Format = format,
+                            Codec = codec,
+                            Bitrate = bitrate,
+                            AlignmentBytes = ChunkSize,
+                            CreatedAt = fi.CreationTimeUtc,
+                            LastAccessedAt = DateTime.UtcNow,
+                            CompletedAt = fi.LastWriteTimeUtc,
+                            IsComplete = true,
+                            ActualFileSize = fi.Length
+                        });
+
+                        entry.TotalSize = fi.Length;
+                        entry.ActualFileSize = fi.Length;
+                        entry.IsComplete = true;
+                        entry.CompletedAt = fi.LastWriteTimeUtc;
+                        entry.LastAccessedAt = DateTime.UtcNow;
+                        entry.MarkFullyDownloaded();
+
+                        AddToTrackIndex(trackId, cacheKey);
+                        anyRecovered = true;
+
+                        Log.Info($"[AudioCache] Orphaned cache file recovered: {cacheKey} ({fi.Length / 1024} KB)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn($"[AudioCache] Failed to probe orphan file {filePath}: {ex.Message}");
+                }
+            }
+        }
+
+        return anyRecovered;
     }
 
     public bool IsFullyCached(string cacheKey) =>
@@ -1090,15 +1185,18 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     private void LoadIndex()
     {
         var indexPath = Path.Combine(_cacheDirectory, CacheMetadataFileName);
-        if (!File.Exists(indexPath)) return;
+        var json = AtomicFile.ReadTextWithFallback(indexPath, out bool loadedFromBackup);
+
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            Log.Info("[AudioCache] Starting with fresh index (no valid index or backup found)");
+            return;
+        }
 
         try
         {
-            string json = File.ReadAllText(indexPath);
-            if (string.IsNullOrWhiteSpace(json)) return;
-
             int loadedSchemaVersion;
-            List<AudioCacheEntry>? entries;
+            List<AudioCacheEntry>? entries = null;
 
             var trimmed = json.AsSpan().TrimStart();
             if (trimmed.Length > 0 && trimmed[0] == '{')
@@ -1180,7 +1278,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
                 entry.RestoreAfterLoad();
 
-                // Self-heal: complete flag присутствует, но range-state пуст
                 if (entry.IsComplete && entry.DownloadedBytes < entry.TotalSize && entry.TotalSize > 0)
                 {
                     if (IsFilePhysicallyComplete(filePath, entry.TotalSize, out long len))
@@ -1201,12 +1298,10 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
                 AddToTrackIndex(entry.TrackId, entry.CacheKey);
             }
 
-            if (needsMigration || needsLufsMigration || needsBitrateMigration || migratedComplete > 0)
+            if (needsMigration || needsLufsMigration || needsBitrateMigration || migratedComplete > 0 || loadedFromBackup)
             {
-                Log.Info($"[AudioCache] Schema migration v{loadedSchemaVersion}→v{CurrentSchemaVersion}: " +
-                         $"{migratedComplete} complete restored, {droppedPartial} partial reset" +
-                         (needsLufsMigration ? $", {entries.Count} normalization metadata reset (LUFS model)" : "") +
-                         (needsBitrateMigration ? ", bitrate bucket remapped" : ""));
+                Log.Info($"[AudioCache] Index loaded successfully (Schema v{loadedSchemaVersion}→v{CurrentSchemaVersion}): " +
+                         $"{_entries.Count} entries restored");
                 _ = SaveIndexAsync();
             }
 
@@ -1214,7 +1309,55 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
         }
         catch (Exception ex)
         {
-            Log.Warn($"[AudioCache] Failed to load index: {ex.Message}");
+            Log.Error($"[AudioCache] Failed to parse index: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Атомарно сохраняет индекс кэша на диск с созданием резервной копии (.bak).
+    /// </summary>
+    private async Task SaveIndexAsync()
+    {
+        if (_disposed) return;
+        if (!await _saveLock.WaitAsync(CacheSaveLockTimeoutMs).ConfigureAwait(false)) return;
+
+        try
+        {
+            var json = BuildIndexJson();
+            var indexPath = Path.Combine(_cacheDirectory, CacheMetadataFileName);
+            await AtomicFile.WriteTextAsync(indexPath, json, createBackup: true).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[AudioCache] Failed to atomic save index: {ex.Message}");
+        }
+        finally
+        {
+            _saveLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Синхронное атомарное сохранение индекса кэша для shutdown-path.
+    /// </summary>
+    private void SaveIndexSync()
+    {
+        if (_disposed) return;
+        if (!_saveLock.Wait(CacheSaveLockTimeoutMs)) return;
+
+        try
+        {
+            var json = BuildIndexJson();
+            var indexPath = Path.Combine(_cacheDirectory, CacheMetadataFileName);
+            AtomicFile.WriteText(indexPath, json, createBackup: true);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[AudioCache] Failed to sync atomic save index: {ex.Message}");
+        }
+        finally
+        {
+            _saveLock.Release();
         }
     }
 
@@ -1274,51 +1417,6 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
         };
 
         return JsonSerializer.Serialize(envelope, AppJsonContext.Default.AudioCacheIndexEnvelope);
-    }
-
-    private async Task SaveIndexAsync()
-    {
-        if (_disposed) return;
-        if (!await _saveLock.WaitAsync(CacheSaveLockTimeoutMs).ConfigureAwait(false)) return;
-
-        try
-        {
-            var json = BuildIndexJson();
-            var indexPath = Path.Combine(_cacheDirectory, CacheMetadataFileName);
-            await File.WriteAllTextAsync(indexPath, json).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            Log.Warn($"[AudioCache] Failed to save index: {ex.Message}");
-        }
-        finally
-        {
-            _saveLock.Release();
-        }
-    }
-
-    /// <summary>
-    /// Синхронно сохраняет индекс кэша. Используется только в shutdown-path.
-    /// </summary>
-    private void SaveIndexSync()
-    {
-        if (_disposed) return;
-        if (!_saveLock.Wait(CacheSaveLockTimeoutMs)) return;
-
-        try
-        {
-            var json = BuildIndexJson();
-            var indexPath = Path.Combine(_cacheDirectory, CacheMetadataFileName);
-            File.WriteAllText(indexPath, json);
-        }
-        catch (Exception ex)
-        {
-            Log.Warn($"[AudioCache] Failed to sync save index: {ex.Message}");
-        }
-        finally
-        {
-            _saveLock.Release();
-        }
     }
 
     private async Task AutoSaveLoopAsync(CancellationToken ct)

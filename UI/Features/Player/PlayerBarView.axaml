@@ -386,8 +386,7 @@
                     <Border Width="1" Height="28" Margin="6,0"
                         Background="{DynamicResource BgHighlightBrush}" />
                     <controls:VolumeControl Volume="{Binding Volume}"
-                        MaxVolume="{Binding MaxVolume}"
-                        VolumeChangeCompleted="OnVolumeControlChangeCompleted" />
+                        MaxVolume="{Binding MaxVolume}" />
                     <Border Width="1" Height="28" Margin="6,0"
                         Background="{DynamicResource BgHighlightBrush}" />
                     <Panel>

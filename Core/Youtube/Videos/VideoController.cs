@@ -2,7 +2,6 @@
 using LMP.Core.Youtube.Bridge.Common;
 using LMP.Core.Youtube.Exceptions;
 using LMP.Core.Youtube.Utils;
-using LMP.Core.Helpers.Extensions;
 using System.Runtime.CompilerServices;
 
 namespace LMP.Core.Youtube.Videos;

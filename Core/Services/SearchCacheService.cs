@@ -68,11 +68,12 @@ public sealed class SearchCacheService
         await _lock.WaitAsync();
         try
         {
-            EnsureCacheDirectoryExists();
             var filePath = GetFilePath(key);
             if (!File.Exists(filePath)) return null;
 
-            var json = await File.ReadAllTextAsync(filePath);
+            var (json, _) = await AtomicFile.ReadTextWithFallbackAsync(filePath).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(json)) return null;
+
             var cached = JsonSerializer.Deserialize(json, AppJsonContext.Default.CachedSearchResult);
 
             if (cached == null) return null;
@@ -122,10 +123,9 @@ public sealed class SearchCacheService
         await _lock.WaitAsync();
         try
         {
-            EnsureCacheDirectoryExists();
             var filePath = GetFilePath(key);
             var json = JsonSerializer.Serialize(cached, AppJsonContext.Default.CachedSearchResult);
-            await File.WriteAllTextAsync(filePath, json);
+            await AtomicFile.WriteTextAsync(filePath, json, createBackup: false).ConfigureAwait(false);
             Log.Debug($"[SearchCache] Stored: '{query}' ({source}), {tracks.Count} items");
         }
         catch (Exception ex)

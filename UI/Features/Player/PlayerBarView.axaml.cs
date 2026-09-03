@@ -293,15 +293,6 @@ public partial class PlayerBarView : UserControl
 
     #endregion
 
-    #region Volume Callback
-
-    private void OnVolumeControlChangeCompleted(object? sender, EventArgs e)
-    {
-        _currentViewModel?.OnVolumeChangeComplete();
-    }
-
-    #endregion
-
     #region Unified Visual Updates
 
     private void RefreshAllVisuals()

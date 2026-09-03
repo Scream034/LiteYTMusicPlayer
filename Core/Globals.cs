@@ -76,7 +76,6 @@ public static class G
             }
             catch { }
 
-            // УПРОЩЁННАЯ ВЕРСИЯ: только коммиты
             var displayVersion = IsDebug
                 ? $"#{commitCount}-dev"
                 : $"#{commitCount}";
@@ -194,11 +193,11 @@ public static class G
         /// Хранится в %LOCALAPPDATA%/LMP/test-config.json
         /// </summary>
         public static readonly string TestConfig = Path.Combine(Folder.Cache, "test-config.json");
-    
+
         public static readonly string TempAuthExtensionZipFile = Path.Combine(Folder.Cache, "LMP-Auth-main.zip");
 
-        public static readonly string CdnHostStats  = Path.Combine(Folder.StreamCache, "cdn_hosts.json");
-        public static readonly string SessionCache  = Path.Combine(Folder.StreamCache, "session_cache.json");
+        public static readonly string CdnHostStats = Path.Combine(Folder.StreamCache, "cdn_hosts.json");
+        public static readonly string SessionCache = Path.Combine(Folder.StreamCache, "session_cache.json");
     }
 
     public static class Json

@@ -208,13 +208,6 @@ public sealed partial class AudioEngine
                 Log.Warn($"[AudioEngine] Sync normalization flush on dispose failed: {ex.Message}");
             }
 
-            _library.UpdateSettings(s =>
-            {
-                s.Volume = _volumePercent;
-                s.RepeatMode = RepeatMode;
-                s.ShuffleEnabled = ShuffleEnabled;
-            });
-
             _commandQueue.Writer.TryComplete();
             _lifetimeCts.Cancel();
 
@@ -247,13 +240,6 @@ public sealed partial class AudioEngine
         Audio.Sources.CachingStreamSource.OnNetworkStalled -= HandleSourceNetworkStalled;
         Audio.Sources.CachingStreamSource.OnNetworkRecovered -= HandleSourceNetworkRecovered;
         lock (_sessionLock) { _sessionCts?.Cancel(); _sessionCts?.Dispose(); }
-
-        _library.UpdateSettings(s =>
-        {
-            s.Volume = _volumePercent;
-            s.RepeatMode = RepeatMode;
-            s.ShuffleEnabled = ShuffleEnabled;
-        });
 
         using (var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
         {

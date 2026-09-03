@@ -7,7 +7,7 @@ using LMP.Core.Youtube.Videos.Streams;
 
 namespace LMP.Core.Audio.Http;
 
-// --- Public Models ---
+// Public Models
 
 /// <summary>
 /// Один вариант аудиопотока внутри закэшированного манифеста.
@@ -97,7 +97,7 @@ public sealed class SessionCacheEnvelope
     public DateTime LastCleanupUtc { get; set; }
 }
 
-// --- Store ---
+// Store
 
 /// <summary>
 /// Персистентный дисковый кэш полных YouTube аудио-манифестов.
@@ -139,7 +139,7 @@ internal static class SessionCacheStore
     private static SessionCacheEnvelope _data = new();
     private static bool _dirty;
 
-    // --- Load / Save ---
+    // Load / Save
 
     /// <summary>
     /// Загружает session-кэш с диска. Вызывается однократно при старте.
@@ -149,10 +149,13 @@ internal static class SessionCacheStore
         try
         {
             var path = G.FilePath.SessionCache;
-            if (!File.Exists(path))
+            var json = AtomicFile.ReadTextWithFallback(path, out bool recovered);
+            if (string.IsNullOrWhiteSpace(json))
                 return;
 
-            var json = File.ReadAllText(path);
+            if (recovered)
+                Log.Warn("[SessionCache] Recovered session cache from backup (.bak)");
+
             var envelope = JsonSerializer.Deserialize(
                 json,
                 AppJsonContext.DefaultCompact.SessionCacheEnvelope);
@@ -207,7 +210,7 @@ internal static class SessionCacheStore
 
             lock (_saveIoLock)
             {
-                File.WriteAllText(G.FilePath.SessionCache, json);
+                AtomicFile.WriteText(G.FilePath.SessionCache, json, createBackup: true);
             }
 
             int variants = 0;
@@ -223,7 +226,7 @@ internal static class SessionCacheStore
         }
     }
 
-    // --- Record ---
+    // Record
 
     /// <summary>
     /// Сохраняет полный манифест после успешного YouTube API resolve.
@@ -297,7 +300,7 @@ internal static class SessionCacheStore
         _ = Task.Run(Save);
     }
 
-    // --- Probe ---
+    // Probe
 
     /// <summary>
     /// Пытается получить и проверить закэшированный манифест для трека.
@@ -437,7 +440,7 @@ internal static class SessionCacheStore
         Log.Debug($"[SessionCache] Invalidated manifest for {trackId}");
     }
 
-    // --- Private Helpers ---
+    // Private Helpers
 
     /// <summary>
     /// Возвращает индекс записи по trackId. Вызывается под lock.

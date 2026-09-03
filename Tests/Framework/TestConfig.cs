@@ -329,12 +329,8 @@ public sealed class TestConfig
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-
-            // Чистый JSON без комментариев — валидный для любого парсера
             var json = JsonSerializer.Serialize(config, G.Json.Beautiful);
-            File.WriteAllText(path, json);
-
+            AtomicFile.WriteText(path, json, createBackup: false);
             Log.Info($"[TestConfig] Saved config to {path}");
         }
         catch (Exception ex)

@@ -1,18 +1,15 @@
-﻿using System.Reactive;
-using System.Reactive.Linq;
-using System.Reactive.Subjects;
+﻿using System.Reactive.Linq;
 using System.Text.Json;
 using LMP.Core.Data;
 using LMP.Core.Data.Repositories;
 using Microsoft.EntityFrameworkCore;
-using ReactiveUI;
 
 namespace LMP.Core.Services;
 
 /// <summary>
 /// Главный сервис библиотеки с SQLite-персистентностью и поддержкой мультиаккаунтов.
 /// </summary>
-public sealed class LibraryService : IAsyncDisposable
+public sealed class LibraryService : IAsyncDisposable, IDisposable
 {
     public const string LikedPlaylistId = "liked";
 
@@ -21,6 +18,8 @@ public sealed class LibraryService : IAsyncDisposable
     /// Схлопывает промежуточные переходы guest → account при логине.
     /// </summary>
     private const int HydrationDebounceMs = 150;
+    private const int SettingsSaveDebounceMs = 1500;
+    private const int SettingsSaveTimeout = 2000;
 
     private readonly TrackRegistry _registry;
     private readonly ITrackRepository _tracks;
@@ -29,8 +28,8 @@ public sealed class LibraryService : IAsyncDisposable
     private readonly IDbContextFactory<LibraryDbContext> _dbFactory;
     private readonly CookieAuthService _auth;
 
-    private readonly Subject<Unit> _saveSettingsSignal = new();
-    private readonly IDisposable _saveSubscription;
+    private readonly SemaphoreSlim _settingsLock = new(1, 1);
+    private readonly Timer _saveDebounceTimer;
 
     /// <summary>
     /// Идентификатор владельца, для которого последний раз была успешно завершена гидрация.
@@ -85,18 +84,10 @@ public sealed class LibraryService : IAsyncDisposable
         _dbFactory = dbFactory;
         _auth = auth;
 
+        _saveDebounceTimer = new Timer(OnSaveTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
+
         LocalizationService.Instance.LanguageChanged += OnLanguageChanged;
-
         _auth.OnAuthStateChanged += HandleAuthStateChanged;
-
-        _saveSubscription = _saveSettingsSignal
-            .Throttle(TimeSpan.FromSeconds(2))
-            .ObserveOn(RxSchedulers.TaskpoolScheduler)
-            .Subscribe(async _ =>
-            {
-                try { await _settings.SetAsync("AppSettings", Settings, AppJsonContext.Default.AppSettings); }
-                catch (Exception ex) { Log.Error($"[LibraryService] Settings save failed: {ex.Message}"); }
-            });
     }
 
     /// <summary>
@@ -343,8 +334,7 @@ public sealed class LibraryService : IAsyncDisposable
 
     private static AppSettings MapLegacySettings(LegacyLibraryData d) => new()
     {
-        Volume = d.Volume,
-        LastVolume = d.LastVolume,
+        Volume = d.Volume > 0 && d.Volume <= 1.0f ? (int)(d.Volume * 100) : (int)d.Volume,
         ShuffleEnabled = d.ShuffleEnabled,
         RepeatMode = d.RepeatMode,
         MaxVolumeLimit = d.MaxVolumeLimit,
@@ -806,16 +796,76 @@ public sealed class LibraryService : IAsyncDisposable
     public string DownloadPath
     {
         get => string.IsNullOrEmpty(Settings.DownloadPath) ? G.Folder.Downloads : Settings.DownloadPath;
-        set { Settings.DownloadPath = value; SaveSettings(); }
+        set { Settings.DownloadPath = value; SaveSettingsImmediate(); }
     }
 
+    /// <summary>
+    /// Применяет мутацию к настройкам в памяти и перезапускает таймер дебаунса записи в БД.
+    /// Не аллоцирует Tasks и не выбрасывает исключений отмены.
+    /// </summary>
+    /// <param name="update">Делегат мутации настроек.</param>
     public void UpdateSettings(Action<AppSettings> update)
     {
         update(Settings);
-        SaveSettings();
+        _saveDebounceTimer.Change(SettingsSaveDebounceMs, Timeout.Infinite);
     }
 
-    private void SaveSettings() => _saveSettingsSignal.OnNext(Unit.Default);
+    private void OnSaveTimerCallback(object? state)
+    {
+        _ = SaveSettingsAsync();
+    }
+
+    private async Task SaveSettingsAsync(CancellationToken ct = default)
+    {
+        if (!await _settingsLock.WaitAsync(SettingsSaveTimeout, ct).ConfigureAwait(false))
+        {
+            Log.Warn("[LibraryService] Settings save lock timeout exceeded");
+            return;
+        }
+
+        try
+        {
+            await _settings.SetAsync("AppSettings", Settings, AppJsonContext.Default.AppSettings, ct).ConfigureAwait(false);
+            Log.Info($"[LibraryService] Debounced settings flush completed (Volume={Settings.Volume}%)");
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Log.Error($"[LibraryService] Debounced settings save failed: {ex.Message}");
+        }
+        finally
+        {
+            _settingsLock.Release();
+        }
+    }
+
+    private void SaveSettingsSync()
+    {
+        _saveDebounceTimer.Change(Timeout.Infinite, Timeout.Infinite);
+
+        _settingsLock.Wait();
+        try
+        {
+            _settings.Set("AppSettings", Settings, AppJsonContext.Default.AppSettings);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[LibraryService] Sync settings save failed: {ex.Message}");
+        }
+        finally
+        {
+            _settingsLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Принудительно и синхронно сбрасывает настройки в базу данных.
+    /// </summary>
+    public void SaveSettingsImmediate() => SaveSettingsSync();
+
+    #endregion
+
+    #region Поиск
 
     /// <summary>
     /// Извлекает историю поиска текущего пользователя из изолированной БД-таблицы параметров.
@@ -823,7 +873,7 @@ public sealed class LibraryService : IAsyncDisposable
     public async Task<List<string>> GetSearchHistoryAsync(CancellationToken ct = default)
     {
         var key = $"SearchHistory_{CurrentOwnerId}";
-        return await _settings.GetOrDefaultAsync(key, new List<string>(),
+        return await _settings.GetOrDefaultAsync(key, [],
             AppJsonContext.Default.ListString, ct).ConfigureAwait(false);
     }
 
@@ -863,6 +913,13 @@ public sealed class LibraryService : IAsyncDisposable
         OnDataChanged?.Invoke();
     }
 
+    public void Dispose()
+    {
+        SaveSettingsSync();
+        _saveDebounceTimer.Dispose();
+        _settingsLock.Dispose();
+    }
+
     public async ValueTask DisposeAsync()
     {
         LocalizationService.Instance.LanguageChanged -= OnLanguageChanged;
@@ -875,14 +932,13 @@ public sealed class LibraryService : IAsyncDisposable
             _hydrationCts = null;
         }
 
-        _saveSubscription.Dispose();
-        _saveSettingsSignal.Dispose();
-
         await _registry.FlushAsync().ConfigureAwait(false);
-        await _settings.SetAsync("AppSettings", Settings, AppJsonContext.Default.AppSettings).ConfigureAwait(false);
+
+        SaveSettingsSync();
+        await _saveDebounceTimer.DisposeAsync().ConfigureAwait(false);
+        _settingsLock.Dispose();
 
         GC.SuppressFinalize(this);
-
         Log.Info("Disposed");
     }
 

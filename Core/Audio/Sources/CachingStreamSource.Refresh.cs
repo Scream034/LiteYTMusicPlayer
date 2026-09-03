@@ -1,7 +1,6 @@
 using System.Net.Http.Headers;
 using LMP.Core.Audio.Http;
 using LMP.Core.Exceptions;
-using LMP.Core.Helpers;
 using LMP.Core.Youtube.Utils;
 
 namespace LMP.Core.Audio.Sources;

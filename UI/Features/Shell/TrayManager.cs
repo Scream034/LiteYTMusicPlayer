@@ -29,8 +29,9 @@ namespace LMP.UI.Features.Shell;
 /// WM_MOUSEMOVE от Shell_NotifyIcon V4 → install hook → wheel scroll → 
 /// uninstall через 2с неактивности ИЛИ при активации главного окна.</para>
 /// 
-/// <para><b>Volume debounce:</b> Во время scroll используется AdjustVolumeFast
-/// (без записи на диск). CommitVolume вызывается при uninstall hook.</para>
+/// <para><b>Громкость:</b> При скролле колесом мыши вызывается единый метод
+/// <see cref="PlayerControlService.AdjustVolume"/>, а сохранение на диск
+/// автоматически дебаунсится сервисом библиотеки без задержек в hook-потоке.</para>
 /// 
 /// <para><b>Toggle debounce:</b> NIN_SELECT и WM_LBUTTONDBLCLK могут приходить оба
 /// при быстром клике. <see cref="TryInvokeToggle"/> использует cooldown
@@ -350,11 +351,6 @@ internal sealed partial class TrayManager : IDisposable
     /// <summary>Таймер автоснятия hook. Runs on UI thread.</summary>
     private Avalonia.Threading.DispatcherTimer? _hookTimeoutTimer;
 
-    /// <summary>
-    /// Флаг: были ли изменения громкости через scroll, которые нужно сохранить на диск.
-    /// </summary>
-    private volatile bool _hasUncommittedVolume;
-
     /// <summary>Флаг видимости popup — volatile для lock-free чтения из hook thread.</summary>
     private volatile bool _isPopupVisible;
 
@@ -500,7 +496,7 @@ internal sealed partial class TrayManager : IDisposable
     {
         if (!_isVisible || _hwnd == IntPtr.Zero) return;
 
-        RequestUninstallHookAndCommit();
+        RequestUninstallHook();
 
         var nid = CreateNotifyIconData();
         Shell_NotifyIconW(NIM_DELETE, ref nid);
@@ -584,7 +580,7 @@ internal sealed partial class TrayManager : IDisposable
     {
         if (!_isHookInstalled) return;
 
-        RequestUninstallHookAndCommit();
+        RequestUninstallHook();
         Log.Debug("[TrayManager] Hook force-uninstalled (window activated)");
     }
 
@@ -791,9 +787,9 @@ internal sealed partial class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// Запрашивает снятие hook и коммитит несохранённую громкость.
+    /// Запрашивает снятие mouse hook в выделенном потоке.
     /// </summary>
-    private void RequestUninstallHookAndCommit()
+    private void RequestUninstallHook()
     {
         StopHookTimeoutTimer();
 
@@ -801,13 +797,6 @@ internal sealed partial class TrayManager : IDisposable
         if (threadId != 0 && _isHookInstalled)
         {
             PostThreadMessage(threadId, WM_APP_UNINSTALL_HOOK, IntPtr.Zero, IntPtr.Zero);
-        }
-
-        if (_hasUncommittedVolume)
-        {
-            _hasUncommittedVolume = false;
-            try { _playerControl.CommitVolume(); }
-            catch (Exception ex) { Log.Warn($"[TrayManager] CommitVolume failed: {ex.Message}"); }
         }
     }
 
@@ -848,7 +837,7 @@ internal sealed partial class TrayManager : IDisposable
         long elapsed = Environment.TickCount64 - Volatile.Read(ref _lastHookActivityTime);
         if (elapsed >= HookAutoUninstallMs)
         {
-            RequestUninstallHookAndCommit();
+            RequestUninstallHook();
         }
     }
 
@@ -884,8 +873,8 @@ internal sealed partial class TrayManager : IDisposable
         short wheelDelta = (short)(mouseData >> 16);
         int volumeDelta = wheelDelta > 0 ? VolumeStep : -VolumeStep;
 
-        int newVolume = _playerControl.AdjustVolumeFast(volumeDelta);
-        _hasUncommittedVolume = true;
+        // Единый центр управления: изменяет звук мгновенно и запускает дебаунс-сохранение в БД
+        int newVolume = _playerControl.AdjustVolume(volumeDelta);
 
         Avalonia.Threading.Dispatcher.UIThread.Post(() =>
         {
@@ -1045,13 +1034,6 @@ internal sealed partial class TrayManager : IDisposable
             _hookThread?.Join(TimeSpan.FromSeconds(2));
         }
         _hookThreadReady.Dispose();
-
-        if (_hasUncommittedVolume)
-        {
-            _hasUncommittedVolume = false;
-            try { _playerControl.CommitVolume(); }
-            catch { /* shutdown */ }
-        }
 
         Hide();
 

@@ -52,6 +52,11 @@ public sealed class AppEntry
     [STAThread]
     public static void Main(string[] args)
     {
+        // Защита от параллельного запуска: удерживает мьютекс на всё время жизни процесса
+        using var instanceGuard = SingleInstanceGuard.TryAcquire();
+        if (instanceGuard is null)
+            return;
+
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         Console.InputEncoding = System.Text.Encoding.UTF8;
 
@@ -414,7 +419,7 @@ public sealed class AppEntry
         var dbPath = G.FilePath.Database;
         services.AddDbContextFactory<LibraryDbContext>(options =>
         {
-            options.UseSqlite($"Data Source={dbPath};Cache=Shared");
+            options.UseSqlite($"Data Source={dbPath}");
             options.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking);
 #if DEBUG
             options.EnableSensitiveDataLogging();

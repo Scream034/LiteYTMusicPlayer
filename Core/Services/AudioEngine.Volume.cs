@@ -6,7 +6,6 @@ public sealed partial class AudioEngine
 
     private int _volumePercent;
     private float _currentGain;
-    private bool _volumeInitialized;
     private readonly Lock _volumeLock = new();
 
     private const int VolumeSaveIntervalMs = 2000;
@@ -30,9 +29,6 @@ public sealed partial class AudioEngine
         ApplyGainToPipeline();
     }
 
-    /// <summary>Сохраняет громкость в настройки немедленно.</summary>
-    public void SaveVolumeNow() => _library.UpdateSettings(s => s.Volume = _volumePercent);
-
     /// <summary>Обрабатывает изменение максимального лимита громкости.</summary>
     public void OnMaxVolumeLimitChanged(int newMaxVolume)
     {
@@ -52,18 +48,16 @@ public sealed partial class AudioEngine
         RaiseOnUI(() => OnMaxVolumeChanged?.Invoke(_library.Settings.MaxVolumeLimit));
     }
 
-    /// <summary>Инициализирует громкость из настроек при первом запуске.</summary>
+    /// <summary>Инициализирует громкость из настроек при старте или после загрузки БД.</summary>
     public void InitializeVolumeFromSettings()
     {
-        if (_volumeInitialized) return;
         var settings = _library.Settings;
-        _volumePercent = settings.Volume switch
+        lock (_volumeLock)
         {
-            > 0 and <= 1.0f => (int)(settings.Volume * 100),
-            > 1 => (int)settings.Volume,
-            _ => 50
-        };
-        _volumeInitialized = true;
+            _volumePercent = settings.Volume > 0
+                ? Math.Clamp(settings.Volume, 0, Math.Max(settings.MaxVolumeLimit, 100))
+                : 50;
+        }
         ApplyGainToPipeline();
     }
 
@@ -129,13 +123,6 @@ public sealed partial class AudioEngine
         {
             while (await timer.WaitForNextTickAsync(_lifetimeCts.Token).ConfigureAwait(false))
             {
-                _library.UpdateSettings(s =>
-                {
-                    s.Volume = _volumePercent;
-                    s.RepeatMode = RepeatMode;
-                    s.ShuffleEnabled = ShuffleEnabled;
-                });
-
                 await FlushPendingNormalizationWritesAsync(_lifetimeCts.Token).ConfigureAwait(false);
             }
         }

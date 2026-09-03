@@ -50,7 +50,8 @@ public sealed class LocalizationService : INotifyPropertyChanged
 
     public void Initialize(string? langCode)
     {
-        if (_isInitialized)
+        // Не блокируем повторную инициализацию, если предыдущая попытка (например, на раннем старте) завершилась с пустым словарем
+        if (_isInitialized && _resources.Count > 0)
         {
             Log.Warn("LocalizationService already initialized");
             return;
@@ -66,33 +67,30 @@ public sealed class LocalizationService : INotifyPropertyChanged
 
         CurrentLanguageCode = langToUse;
         LoadLanguage(langToUse);
-        _isInitialized = true;
+        _isInitialized = _resources.Count > 0;
 
-        Log.Info($"LocalizationService initialized: {langToUse}");
+        Log.Info($"LocalizationService initialized: {langToUse} (Keys: {_resources.Count})");
     }
 
     private void LoadLanguage(string langCode)
     {
         try
         {
-            var uri = new Uri($"avares://LMP/Assets/Localization/{langCode}.json");
-
-            if (!AssetLoader.Exists(uri))
+            using var stream = OpenLocalizationStream(langCode);
+            if (stream == null)
             {
-                Log.Error($"Localization file not found: {uri}");
+                Log.Error($"Localization stream not found for '{langCode}'");
                 if (langCode != "en") LoadLanguage("en");
                 return;
             }
 
-            using var stream = AssetLoader.Open(uri);
             using var reader = new StreamReader(stream);
             var json = reader.ReadToEnd();
 
-            // JsonSerializer бросит JsonException при невалидной структуре
-            // (вложенные объекты вместо строк, массивы и т.д.)
-            var resources = JsonSerializer.Deserialize(json, AppJsonContext.Default.DictionaryStringString) ?? throw new InvalidOperationException("Deserialization returned null");
-            _resources = resources;
+            var resources = JsonSerializer.Deserialize(json, AppJsonContext.Default.DictionaryStringString)
+                ?? throw new InvalidOperationException("Deserialization returned null");
 
+            _resources = resources;
             Log.Info($"✓ Loaded {langCode}.json ({_resources.Count} keys)");
         }
         catch (Exception ex)
@@ -109,6 +107,46 @@ public sealed class LocalizationService : INotifyPropertyChanged
                 LoadLanguage("en");
             }
         }
+    }
+
+    /// <summary>
+    /// Безопасно открывает поток файла локализации.
+    /// Работает как через Avalonia AssetLoader (если фреймворк загружен), так и напрямую через файловую систему на этапе раннего запуска.
+    /// </summary>
+    private static Stream? OpenLocalizationStream(string langCode)
+    {
+        var relativePath = Path.Combine("Assets", "Localization", $"{langCode}.json");
+
+        // Попытка через стандартный AssetLoader Avalonia
+        try
+        {
+            var uri = new Uri($"avares://LMP/Assets/Localization/{langCode}.json");
+            if (AssetLoader.Exists(uri))
+                return AssetLoader.Open(uri);
+        }
+        catch
+        {
+            // Avalonia ещё не сконфигурирована в Main — переходим к файловому fallback
+        }
+
+        // Fallback: прямой поиск файла рядом с исполняемым файлом приложения
+        var appDir = AppContext.BaseDirectory;
+        var filePath = Path.Combine(appDir, relativePath);
+        if (File.Exists(filePath))
+            return File.OpenRead(filePath);
+
+        // Fallback: поиск вверх по дереву папок (для режима отладки dotnet run / IDE)
+        var dir = new DirectoryInfo(appDir);
+        for (int i = 0; i < 4 && dir != null; i++)
+        {
+            var candidate = Path.Combine(dir.FullName, relativePath);
+            if (File.Exists(candidate))
+                return File.OpenRead(candidate);
+
+            dir = dir.Parent;
+        }
+
+        return null;
     }
 
     public string this[string key]

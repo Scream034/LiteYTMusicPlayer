@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
-using LMP.Core.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 
 namespace LMP.Core.Data.Repositories;
@@ -23,6 +22,15 @@ public interface ISettingsRepository
         T value,
         JsonTypeInfo<T> typeInfo,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Синхронно сохраняет настройку в базу данных.
+    /// Используется при завершении работы приложения (shutdown path) во избежание deadlock.
+    /// </summary>
+    void Set<T>(
+        string key,
+        T value,
+        JsonTypeInfo<T> typeInfo);
 }
 
 public sealed class SettingsRepository(IDbContextFactory<LibraryDbContext> factory) : ISettingsRepository
@@ -34,11 +42,12 @@ public sealed class SettingsRepository(IDbContextFactory<LibraryDbContext> facto
         JsonTypeInfo<T> typeInfo,
         CancellationToken ct = default) where T : class
     {
-        await using var ctx = await _factory.CreateDbContextAsync(ct);
-        var entity = await ctx.Settings.FirstOrDefaultAsync(s => s.Key == key, ct);
+        await using var ctx = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var entity = await ctx.Settings.FirstOrDefaultAsync(s => s.Key == key, ct).ConfigureAwait(false);
 
         if (entity is null) return null;
 
+        Log.Info($"[SettingsRepository] Loaded '{key}' from DB: {entity.Value}");
         return JsonSerializer.Deserialize(entity.Value, typeInfo);
     }
 
@@ -52,28 +61,50 @@ public sealed class SettingsRepository(IDbContextFactory<LibraryDbContext> facto
     }
 
     public async Task SetAsync<T>(
-        string key,
-        T value,
-        JsonTypeInfo<T> typeInfo,
-        CancellationToken ct = default)
+         string key,
+         T value,
+         JsonTypeInfo<T> typeInfo,
+         CancellationToken ct = default)
     {
-        await using var ctx = await _factory.CreateDbContextAsync(ct);
+        await using var ctx = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var json = JsonSerializer.Serialize(value, typeInfo);
-        var existing = await ctx.Settings.FirstOrDefaultAsync(s => s.Key == key, ct);
 
-        Log.Trace(json);
+        // Прямой SQL Upsert в обход ChangeTracker EF Core (гарантирует реальное обновление строки в SQLite)
+        await ctx.Database.ExecuteSqlRawAsync(
+            "INSERT INTO Settings (Key, Value) VALUES ({0}, {1}) ON CONFLICT(Key) DO UPDATE SET Value = excluded.Value;",
+            [key, json],
+            ct).ConfigureAwait(false);
 
-        if (existing != null)
+        // Сбрасываем страницы WAL в основной файл на диске
+        try
         {
-            existing.Value = json;
-            ctx.Settings.Update(existing);
+            await ctx.Database.ExecuteSqlRawAsync("PRAGMA wal_checkpoint(PASSIVE);", ct).ConfigureAwait(false);
         }
-        else
-        {
-            ctx.Settings.Add(new SettingEntity { Key = key, Value = json });
-        }
+        catch { }
 
-        await ctx.SaveChangesAsync(ct);
+        Log.Info($"[SettingsRepository] Successfully committed '{key}' to database ({json.Length} bytes)");
+    }
+
+    public void Set<T>(
+        string key,
+        T value,
+        JsonTypeInfo<T> typeInfo)
+    {
+        using var ctx = _factory.CreateDbContext();
+
+        var json = JsonSerializer.Serialize(value, typeInfo);
+
+        ctx.Database.ExecuteSqlRaw(
+            "INSERT INTO Settings (Key, Value) VALUES ({0}, {1}) ON CONFLICT(Key) DO UPDATE SET Value = excluded.Value;",
+            key, json);
+
+        try
+        {
+            ctx.Database.ExecuteSqlRaw("PRAGMA wal_checkpoint(PASSIVE);");
+        }
+        catch { }
+
+        Log.Info($"[SettingsRepository] Successfully committed '{key}' (sync) to database ({json.Length} bytes)");
     }
 }

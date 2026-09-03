@@ -364,16 +364,7 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
         ShuffleEnabled = settings.ShuffleEnabled;
         RepeatMode = settings.RepeatMode;
 
-        int savedVolume = settings.LastVolume;
-        if (savedVolume <= 0)
-        {
-            savedVolume = settings.Volume > 1.0f
-                ? (int)settings.Volume
-                : (int)Math.Round(settings.Volume * 100.0);
-        }
-
-        _volumePercent = savedVolume > 0 ? Math.Clamp(savedVolume, 0, VolumeNormalRange) : 50;
-        ApplyGainToPipeline();
+        InitializeVolumeFromSettings();
     }
 
     private void ApplyStreamingProfile()

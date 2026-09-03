@@ -83,7 +83,6 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
     private CompositeDisposable? _heavySubscriptions;
 
     private bool _isSeeking;
-    private bool _isInitialized;
 
     private int _lastVolumeBeforeMute = DefaultVolume;
 
@@ -365,7 +364,7 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
         int newMax = Math.Max(settings.MaxVolumeLimit, DefaultMaxVolume);
         MaxVolume = newMax;
 
-        int savedVolume = settings.LastVolume;
+        int savedVolume = settings.Volume;
         if (savedVolume > 0 && savedVolume <= MaxVolume)
         {
             Volume = savedVolume;
@@ -385,11 +384,14 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
         AutoShuffleEnabled = _playerControl.ShuffleEnabled;
         RepeatMode = _playerControl.RepeatMode;
 
-        // Синхронизируем начальное значение с координатором, минуя лишний дисковый I/O
-        _playerControl.SetVolumeFast(Volume);
+        // Синхронизируем громкость только при реальном расхождении, чтобы не инициировать холостую запись в БД на старте
+        if (_playerControl.CurrentVolume != Volume)
+        {
+            _playerControl.SetVolume(Volume);
+        }
+
         RecalcEffectivePercent();
 
-        _isInitialized = true;
         RaiseVolumePropertiesChanged();
         UpdateQueueState();
 
@@ -447,22 +449,20 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
         }));
 
         ToggleMuteCommand = CreateCommand(ReactiveCommand.Create(() =>
-        {
-            if (IsMuted)
-            {
-                int restoreVolume = Math.Min(
-                    _lastVolumeBeforeMute > 0 ? _lastVolumeBeforeMute : DefaultVolume,
-                    MaxVolume);
-                Volume = restoreVolume;
-            }
-            else
-            {
-                _lastVolumeBeforeMute = Volume;
-                _library.UpdateSettings(s => s.LastVolume = Volume);
-                Volume = 0;
-            }
-            OnVolumeChangeComplete();
-        }));
+                {
+                    if (IsMuted)
+                    {
+                        int restoreVolume = Math.Min(
+                            _lastVolumeBeforeMute > 0 ? _lastVolumeBeforeMute : DefaultVolume,
+                            MaxVolume);
+                        Volume = restoreVolume;
+                    }
+                    else
+                    {
+                        _lastVolumeBeforeMute = Volume;
+                        Volume = 0;
+                    }
+                }));
 
         ToggleLikeCommand = CreateCommand(ReactiveCommand.CreateFromTask(async () =>
         {
@@ -559,13 +559,13 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
             })
             .DisposeWith(Disposables);
 
-        // Передача изменений громкости от слайдера плеербара к координатору
+        // Передача изменений громкости от слайдера плеербара в единый координатор
         this.WhenAnyValue(x => x.Volume)
             .Subscribe(v =>
             {
                 if (_playerControl.CurrentVolume != v)
                 {
-                    _playerControl.SetVolumeFast(v);
+                    _playerControl.SetVolume(v);
                 }
 
                 RecalcEffectivePercent();
@@ -1228,14 +1228,6 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
         SyncPositionFromEngine();
     }
 
-    /// <summary>
-    /// Фиксирует измененную громкость в конфигурационном файле приложения.
-    /// </summary>
-    public void OnVolumeChangeComplete()
-    {
-        _playerControl.CommitVolume();
-    }
-
     public int GetVolumeScrollStep()
     {
         if (MaxVolume <= DefaultMaxVolume) return 1;
@@ -1709,7 +1701,7 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// Освобождает ресурсы, используемые ViewModel, и сохраняет текущую громкость.
+    /// Освобождает ресурсы, используемые ViewModel.
     /// </summary>
     protected override void Dispose(bool disposing)
     {
@@ -1724,11 +1716,6 @@ public sealed partial class PlayerBarViewModel : ViewModelBase
             CancelFormatsLoading();
 
             _heavySubscriptions?.Dispose();
-
-            if (_isInitialized && Volume > 0)
-            {
-                _playerControl.CommitVolume();
-            }
         }
         base.Dispose(disposing);
     }

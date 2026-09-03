@@ -115,11 +115,16 @@ public sealed class PlayerControlService : IDisposable
         // Если БД уже загружена — синхронизируем UI-Subjects, если нет — ждем OnInitialized
         if (_library.IsInitialized)
         {
+            _audio.InitializeVolumeFromSettings();
             ForceSync();
         }
         else
         {
-            _library.OnInitialized += ForceSync;
+            _library.OnInitialized += () =>
+            {
+                _audio.InitializeVolumeFromSettings();
+                ForceSync();
+            };
         }
 
         Log.Debug("[PlayerControl] Service initialized");
@@ -313,27 +318,6 @@ public sealed class PlayerControlService : IDisposable
     }
 
     /// <summary>
-    /// Устанавливает громкость напрямую без сохранения на диск.
-    /// Используется для slider drag, mouse scroll и других частых UI-обновлений.
-    /// Является единственным способом изменить громкость из UI.
-    /// </summary>
-    /// <param name="volume">Новое значение громкости (0–MaxVolume).</param>
-    public void SetVolumeFast(int volume)
-    {
-        int maxVolume = _library.Settings.MaxVolumeLimit;
-        if (maxVolume <= 0) maxVolume = 100;
-
-        int clamped = Math.Clamp(volume, 0, maxVolume);
-        int current = (int)Math.Round(_audio.GetVolume());
-
-        if (clamped == current)
-            return;
-
-        _audio.SetVolumeInstant(clamped);
-        _volumeSubject.OnNext(clamped);
-    }
-
-    /// <summary>
     /// Устанавливает ID плейлиста-источника текущей очереди.
     /// Вызывается из PlaylistViewModel перед StartQueueAsync.
     /// Null = очередь запущена не из плейлиста.
@@ -346,52 +330,11 @@ public sealed class PlayerControlService : IDisposable
     }
 
     /// <summary>
-    /// Быстрое изменение громкости без сохранения на диск.
-    /// Предназначено для вызова из tight loops (mouse hook callback).
-    ///
-    /// <para><b>Почему отдельный метод:</b> Стандартный <see cref="AdjustVolume"/>
-    /// вызывает <c>SaveVolumeNow()</c> и <c>UpdateSettings()</c> на каждый тик колёсика.
-    /// В mouse hook callback это создаёт задержку (файловый I/O).
-    /// Этот метод только меняет значение в памяти + публикует в Subject.</para>
-    ///
-    /// <para>Вызывайте <see cref="CommitVolume"/> после завершения серии scroll events
-    /// для сохранения на диск.</para>
+    /// Изменяет громкость на указанный шаг (положительный или отрицательный).
+    /// Используется для колеса мыши в трее и горячих клавиш.
     /// </summary>
-    /// <param name="delta">Положительный = громче, отрицательный = тише.</param>
-    /// <returns>Новое значение громкости (0–MaxVolume).</returns>
-    public int AdjustVolumeFast(int delta)
-    {
-        int currentVolume = (int)Math.Round(_audio.GetVolume());
-        int maxVolume = _library.Settings.MaxVolumeLimit;
-        if (maxVolume <= 0) maxVolume = 100;
-
-        int newVolume = Math.Clamp(currentVolume + delta, 0, maxVolume);
-
-        if (newVolume != currentVolume)
-            SetVolumeFast(newVolume);
-
-        return newVolume;
-    }
-
-    /// <summary>
-    /// Сохраняет текущую громкость на диск.
-    /// Вызывается после серии быстрых изменений (scroll end, drag end).
-    /// </summary>
-    public void CommitVolume()
-    {
-        int volume = (int)Math.Round(_audio.GetVolume());
-        _library.UpdateSettings(s => s.LastVolume = volume);
-        _audio.SaveVolumeNow();
-        Log.Debug($"[PlayerControl] Volume committed: {volume}");
-    }
-
-    /// <summary>
-    /// Изменяет громкость на указанный шаг с немедленным сохранением на диск.
-    /// Используется для scroll на tray icon и горячих клавиш.
-    /// Публикует новое значение в <see cref="VolumeObservable"/>.
-    /// </summary>
-    /// <param name="delta">Положительный = громче, отрицательный = тише.</param>
-    /// <returns>Новое значение громкости (0–MaxVolume).</returns>
+    /// <param name="delta">Величина изменения громкости.</param>
+    /// <returns>Новое значение громкости.</returns>
     public int AdjustVolume(int delta)
     {
         int currentVolume = (int)Math.Round(_audio.GetVolume());
@@ -399,24 +342,15 @@ public sealed class PlayerControlService : IDisposable
         if (maxVolume <= 0) maxVolume = 100;
 
         int newVolume = Math.Clamp(currentVolume + delta, 0, maxVolume);
-
-        if (newVolume != currentVolume)
-        {
-            _audio.SetVolumeInstant(newVolume);
-            _library.UpdateSettings(s => s.LastVolume = newVolume);
-            _audio.SaveVolumeNow();
-            _volumeSubject.OnNext(newVolume);
-        }
-
+        SetVolume(newVolume);
         return newVolume;
     }
 
     /// <summary>
-    /// Устанавливает громкость напрямую с немедленным сохранением на диск.
-    /// Используется для слайдера PlayerBar при окончании drag.
-    /// Публикует новое значение в <see cref="VolumeObservable"/>.
+    /// Устанавливает громкость воспроизведения, применяет её к аудио-пайплайну и планирует фоновое сохранение.
+    /// Является единственной точкой входа для изменения громкости во всём приложении.
     /// </summary>
-    /// <param name="volume">Значение громкости (0–MaxVolume).</param>
+    /// <param name="volume">Новое значение громкости (0–MaxVolume).</param>
     public void SetVolume(int volume)
     {
         int maxVolume = _library.Settings.MaxVolumeLimit;
@@ -428,15 +362,15 @@ public sealed class PlayerControlService : IDisposable
         if (clamped != current)
         {
             _audio.SetVolumeInstant(clamped);
-            _library.UpdateSettings(s => s.LastVolume = clamped);
-            _audio.SaveVolumeNow();
             _volumeSubject.OnNext(clamped);
         }
+
+        // Обновляем настройки; дебаунсер в LibraryService сам запишет их на диск без фризов UI
+        _library.UpdateSettings(s => s.Volume = clamped);
     }
 
     /// <summary>
     /// Возвращает текущую громкость из AudioEngine (округлённую до int).
-    /// Предпочитайте свойство <see cref="CurrentVolume"/> или <see cref="VolumeObservable"/>.
     /// </summary>
     public int GetCurrentVolume() => (int)Math.Round(_audio.GetVolume());
 

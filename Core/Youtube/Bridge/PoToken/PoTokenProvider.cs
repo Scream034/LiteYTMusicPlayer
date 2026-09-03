@@ -8,7 +8,7 @@ namespace LMP.Core.Youtube.Bridge.PoToken;
 /// </summary>
 public sealed class PoTokenProvider : IDisposable
 {
-    // --- Constants ---
+    // Constants
 
     /// <summary>Порог: если осталось меньше N минут — нужно обновить токен.</summary>
     private const int RefreshThresholdMinutes = 60;
@@ -16,7 +16,7 @@ public sealed class PoTokenProvider : IDisposable
     private static readonly string CachePath =
         Path.Combine(G.Folder.NTokenCache, "pot_session.json");
 
-    // --- State ---
+    // State
 
     private readonly BotGuardService _botGuard;
 
@@ -37,7 +37,7 @@ public sealed class PoTokenProvider : IDisposable
         _botGuard = new BotGuardService(http);
     }
 
-    // --- Public API ---
+    // Public API
 
     /// <summary>
     /// Возвращает session-bound PoToken для параметра <c>&amp;pot=</c> videoplayback URL.
@@ -132,7 +132,7 @@ public sealed class PoTokenProvider : IDisposable
         Log.Info("[PoTokenProvider] Cache invalidated");
     }
 
-    // --- Lazy Init ---
+    // Lazy Init
 
     private async ValueTask EnsureInitializedAsync(CancellationToken ct)
     {
@@ -151,15 +151,18 @@ public sealed class PoTokenProvider : IDisposable
         }
     }
 
-    // --- Disk I/O ---
+    // Disk I/O
 
     private async Task LoadFromDiskAsync(CancellationToken ct)
     {
         try
         {
-            if (!File.Exists(CachePath)) return;
+            var (json, recovered) = await AtomicFile.ReadTextWithFallbackAsync(CachePath, ct: ct).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(json)) return;
 
-            var json = await File.ReadAllTextAsync(CachePath, ct).ConfigureAwait(false);
+            if (recovered)
+                Log.Warn("[PoTokenProvider] Recovered session token from backup (.bak)");
+
             var entry = JsonSerializer.Deserialize(json, AppJsonContext.DefaultCompact.PoTokenCacheEntry);
 
             if (entry is null || string.IsNullOrEmpty(entry.Token)) return;
@@ -183,8 +186,6 @@ public sealed class PoTokenProvider : IDisposable
             Log.Info($"[PoTokenProvider] Loaded from disk " +
                      $"(remaining: {remaining.TotalHours:F1}h, needsRefresh: {needsRefresh})");
 
-            // Кладём в memory даже если NeedsRefresh — fast path не пройдёт (IsUsable вернёт false),
-            // генерация случится при следующем GetSessionTokenAsync
             _sessionToken = result;
         }
         catch (OperationCanceledException) { throw; }
@@ -198,8 +199,6 @@ public sealed class PoTokenProvider : IDisposable
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(CachePath)!);
-
             var entry = new PoTokenCacheEntry
             {
                 Token = result.Token,
@@ -209,7 +208,7 @@ public sealed class PoTokenProvider : IDisposable
             };
 
             var json = JsonSerializer.Serialize(entry, AppJsonContext.DefaultCompact.PoTokenCacheEntry);
-            await File.WriteAllTextAsync(CachePath, json).ConfigureAwait(false);
+            await AtomicFile.WriteTextAsync(CachePath, json, createBackup: true).ConfigureAwait(false);
 
             Log.Debug("[PoTokenProvider] Session token saved to disk");
         }
@@ -219,7 +218,7 @@ public sealed class PoTokenProvider : IDisposable
         }
     }
 
-    // --- Helpers ---
+    // Helpers
 
     [System.Runtime.CompilerServices.MethodImpl(
         System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -235,7 +234,7 @@ public sealed class PoTokenProvider : IDisposable
     private static string Truncate(string? s, int len = 12) =>
         s is null ? "null" : s.Length <= len ? s : string.Concat(s.AsSpan(0, len), "...");
 
-    // --- IDisposable ---
+    // IDisposable
 
     /// <inheritdoc/>
     public void Dispose()

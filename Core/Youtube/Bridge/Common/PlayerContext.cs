@@ -144,13 +144,10 @@ public sealed partial class PlayerContext
             var prepPath = GetPreprocessedCachePath(Version);
             var stsPath = GetStsCachePath(Version);
 
-            var dir = Path.GetDirectoryName(prepPath);
-            if (dir is not null) Directory.CreateDirectory(dir);
-
-            await File.WriteAllTextAsync(prepPath, PreprocessedJs).ConfigureAwait(false);
+            await AtomicFile.WriteTextAsync(prepPath, PreprocessedJs, createBackup: false).ConfigureAwait(false);
             if (!string.IsNullOrEmpty(Sts))
             {
-                await File.WriteAllTextAsync(stsPath, Sts).ConfigureAwait(false);
+                await AtomicFile.WriteTextAsync(stsPath, Sts, createBackup: false).ConfigureAwait(false);
             }
         }
         catch (Exception ex)
@@ -168,12 +165,10 @@ public sealed partial class PlayerContext
         try
         {
             var path = GetCachePath(Version);
-            var dir = Path.GetDirectoryName(path);
-            if (dir is not null) Directory.CreateDirectory(dir);
 
             if (!string.IsNullOrEmpty(BaseJs))
             {
-                await File.WriteAllTextAsync(path, BaseJs).ConfigureAwait(false);
+                await AtomicFile.WriteTextAsync(path, BaseJs, createBackup: false).ConfigureAwait(false);
             }
 
             await SavePreprocessedCacheAsync().ConfigureAwait(false);

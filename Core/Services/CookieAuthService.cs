@@ -56,12 +56,16 @@ public partial class CookieAuthService
 
     private async Task LoadCookiesAsync()
     {
-        if (!File.Exists(G.FilePath.Cookie)) return;
-
         try
         {
-            var raw = await File.ReadAllTextAsync(G.FilePath.Cookie).ConfigureAwait(false);
-            ParseAndSetCookies(raw);
+            var (raw, recovered) = await AtomicFile.ReadTextWithFallbackAsync(G.FilePath.Cookie).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(raw))
+            {
+                if (recovered)
+                    Log.Warn("[Auth] Recovered auth cookies from backup (.bak)");
+
+                ParseAndSetCookies(raw);
+            }
         }
         catch (Exception ex)
         {
@@ -71,12 +75,13 @@ public partial class CookieAuthService
 
     private async Task LoadAuthDataAsync()
     {
-        if (!File.Exists(_authDataPath)) return;
-
         try
         {
-            var json = await File.ReadAllTextAsync(_authDataPath).ConfigureAwait(false);
+            var (json, recovered) = await AtomicFile.ReadTextWithFallbackAsync(_authDataPath).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(json)) return;
+
+            if (recovered)
+                Log.Warn("[Auth] Recovered auth profile from backup (.bak)");
 
             var loadedState = JsonSerializer.Deserialize(json, AppJsonContext.DefaultCompact.AuthState);
             if (loadedState != null)
@@ -638,9 +643,13 @@ public partial class CookieAuthService
         }
 
         if (File.Exists(G.FilePath.Cookie)) File.Delete(G.FilePath.Cookie);
+        var cookieBak = string.Concat(G.FilePath.Cookie, ".bak");
+        if (File.Exists(cookieBak)) File.Delete(cookieBak);
 
         State = new AuthState();
         if (File.Exists(_authDataPath)) File.Delete(_authDataPath);
+        var authBak = string.Concat(_authDataPath, ".bak");
+        if (File.Exists(authBak)) File.Delete(authBak);
 
         OnAuthStateChanged?.Invoke();
     }
@@ -730,7 +739,7 @@ public partial class CookieAuthService
         await _authSaveSemaphore.WaitAsync().ConfigureAwait(false);
         try
         {
-            await File.WriteAllTextAsync(_authDataPath, json).ConfigureAwait(false);
+            await AtomicFile.WriteTextAsync(_authDataPath, json, createBackup: true).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -758,7 +767,7 @@ public partial class CookieAuthService
         await _cookieSaveSemaphore.WaitAsync().ConfigureAwait(false);
         try
         {
-            await File.WriteAllTextAsync(G.FilePath.Cookie, content).ConfigureAwait(false);
+            await AtomicFile.WriteTextAsync(G.FilePath.Cookie, content, createBackup: true).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

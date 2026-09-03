@@ -800,41 +800,44 @@ public sealed class BotGuardService : IDisposable
     }
 
     private static void SaveArtifactBundle(
-        string baseName,
-        string? programText,
-        string diagText,
-        string? consoleOutput,
-        string? traceData)
+     string baseName,
+     string? programText,
+     string diagText,
+     string? consoleOutput,
+     string? traceData)
     {
         var dir = Path.Combine(G.Folder.Logs, "BotGuard", "programs");
-        Directory.CreateDirectory(dir);
 
         if (!string.IsNullOrEmpty(programText))
         {
-            File.WriteAllText(
+            AtomicFile.WriteText(
                 Path.Combine(dir, $"{baseName}.program.txt"),
                 programText,
+                createBackup: false,
                 Encoding.UTF8);
         }
 
-        File.WriteAllText(
+        AtomicFile.WriteText(
             Path.Combine(dir, $"{baseName}.diag.txt"),
             diagText,
+            createBackup: false,
             Encoding.UTF8);
 
         if (!string.IsNullOrWhiteSpace(consoleOutput))
         {
-            File.WriteAllText(
+            AtomicFile.WriteText(
                 Path.Combine(dir, $"{baseName}.console.txt"),
                 consoleOutput,
+                createBackup: false,
                 Encoding.UTF8);
         }
 
         if (!string.IsNullOrEmpty(traceData) && !traceData.Contains("total=0, buffered=0"))
         {
-            File.WriteAllText(
+            AtomicFile.WriteText(
                 Path.Combine(dir, $"{baseName}.trace.txt"),
                 traceData,
+                createBackup: false,
                 Encoding.UTF8);
 
             Log.Debug($"[BotGuardService] Trace saved: {traceData.Length / 1024}KB");

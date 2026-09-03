@@ -1,6 +1,4 @@
 using LMP.Core.Audio.Helpers;
-using LMP.Core.Audio.Http;
-using LMP.Core.Audio.Normalization;
 using LMP.Core.Exceptions;
 using ReactiveUI;
 

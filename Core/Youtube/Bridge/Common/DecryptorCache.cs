@@ -112,14 +112,17 @@ public sealed class DecryptorCache
 
         try
         {
-            if (!File.Exists(DiskPath)) return;
+            var (json, recovered) = await AtomicFile.ReadTextWithFallbackAsync(DiskPath).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(json)) return;
 
-            var json = await File.ReadAllTextAsync(DiskPath);
+            if (recovered)
+                Log.Warn($"[Cache] Recovered decryptor cache from backup (.bak) for {Path.GetFileName(DiskPath)}");
+
             var data = JsonSerializer.Deserialize(json, AppJsonContext.Default.DecryptorCacheData);
 
             if (data is null || data.PlayerVersion != playerVersion)
             {
-                File.Delete(DiskPath);
+                Clear();
                 return;
             }
 
@@ -146,8 +149,6 @@ public sealed class DecryptorCache
 
         try
         {
-            Directory.CreateDirectory(CacheFolder);
-
             var snapshot = _memory.ToArray();
 
             var entries = snapshot
@@ -164,7 +165,7 @@ public sealed class DecryptorCache
             };
 
             var json = JsonSerializer.Serialize(data, AppJsonContext.Default.DecryptorCacheData);
-            await File.WriteAllTextAsync(DiskPath, json);
+            await AtomicFile.WriteTextAsync(DiskPath, json, createBackup: true).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -184,6 +185,10 @@ public sealed class DecryptorCache
                 File.Delete(DiskPath);
                 Log.Info($"[Cache] Deleted cache file on disk: {Path.GetFileName(DiskPath)}");
             }
+
+            var backupPath = string.Concat(DiskPath, ".bak");
+            if (File.Exists(backupPath))
+                File.Delete(backupPath);
         }
         catch (Exception ex)
         {

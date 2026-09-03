@@ -317,8 +317,12 @@ public sealed class MemorySettings
 public sealed class AppSettings
 {
     // === Audio ===
-    public float Volume { get; set; } = 0.5f;
-    public int LastVolume { get; set; } = 50;
+
+    /// <summary>
+    /// Текущий уровень громкости плеера в процентах (0–100).
+    /// </summary>
+    public int Volume { get; set; } = 50;
+
     public bool ShuffleEnabled { get; set; }
     public RepeatMode RepeatMode { get; set; } = RepeatMode.None;
     public int MaxVolumeLimit { get; set; } = 100;

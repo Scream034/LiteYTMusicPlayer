@@ -343,6 +343,9 @@
   "Notification_PlaybackDelay_Message": "Воспроизведение задерживается из-за медленного или прерванного соединения. Пожалуйста, подождите...",
   "Notification_PlaybackDelay_Title": "Задержка воспроизведения",
   "Notification_ViewDetails": "Посмотреть детали",
+  "Notification_AlreadyRunning_Message": "Lite Music Player уже запущен в фоновом режиме или свёрнут в трей.",
+  "Notification_AlreadyRunning_Question": "Lite Music Player уже запущен.\n\nЗавершить предыдущий процесс и запустить новый?",
+  "Notification_AlreadyRunning_Title": "Уже запущено",
 
   "Player_Duration": "Длительность: {0} / {1}",
   "Player_Loading_Duration": "Загрузка длительности...",

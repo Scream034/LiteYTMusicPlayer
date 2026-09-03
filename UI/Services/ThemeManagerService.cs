@@ -29,7 +29,7 @@ public sealed class ThemeManagerService
     /// </summary>
     public void ApplyTheme(ThemeSettings theme)
     {
-        // ═══ ЗАЩИТА: проверка готовности Application ═══
+        // ЗАЩИТА: проверка готовности Application
         if (Application.Current?.Resources is not { } resources)
         {
             Log.Warn("Application.Current.Resources not available yet, deferring theme application");
@@ -65,7 +65,7 @@ public sealed class ThemeManagerService
         SetColor(resources, "TextMuted", theme.TextMuted);
         SetColor(resources, "TextDark", theme.TextDark);
 
-        // ═══ КОНТРАСТНЫЙ ТЕКСТ ДЛЯ ACCENT КНОПОК ═══
+        // КОНТРАСТНЫЙ ТЕКСТ ДЛЯ ACCENT КНОПОК
         // Автоматически определяем чёрный или белый текст на акцентном фоне
         _ = TryParseColor(theme.AccentColor, out var accent);
         var accentButtonText = GetContrastingTextColor(accent);
@@ -80,7 +80,7 @@ public sealed class ThemeManagerService
         resources["AccentButtonTextTransparent"] = accentButtonTextTransparent;
         resources["AccentButtonTextTransparentBrush"] = new SolidColorBrush(accentButtonTextTransparent);
 
-        // ═══ AVALONIA FLUENT THEME COMPATIBILITY ═══
+        // AVALONIA FLUENT THEME COMPATIBILITY
         // Переопределяем системные ресурсы для корректной работы стандартных контролов
         ApplyFluentOverrides(resources, theme);
 
@@ -167,7 +167,7 @@ public sealed class ThemeManagerService
         var accentButtonText = GetContrastingTextColor(accent);
         var transparent = Colors.Transparent;
 
-        // ═══ SYSTEM ACCENT COLORS ═══
+        // SYSTEM ACCENT COLORS
         resources["SystemAccentColor"] = accent;
         resources["SystemAccentColorDark1"] = accentHover;
         resources["SystemAccentColorDark2"] = accentHover;
@@ -176,20 +176,20 @@ public sealed class ThemeManagerService
         resources["SystemAccentColorLight2"] = accentHover;
         resources["SystemAccentColorLight3"] = accentHover;
 
-        // ═══ TEXT ON ACCENT ═══
+        // TEXT ON ACCENT
         resources["TextOnAccentFillColorPrimary"] = accentButtonText;
         resources["TextOnAccentFillColorSecondary"] = accentButtonText;
         resources["TextOnAccentFillColorDisabled"] = textSecondary;
         resources["TextOnAccentFillColorSelectedText"] = accentButtonText;
 
-        // ═══ GENERAL TEXT ═══
+        // GENERAL TEXT
         resources["TextFillColorPrimary"] = textPrimary;
         resources["TextFillColorSecondary"] = textSecondary;
         resources["TextFillColorTertiary"] = textSecondary;
         resources["TextFillColorDisabled"] = textSecondary;
         resources["TextFillColorInverse"] = textDark;
 
-        // ═══ CONTROL BACKGROUNDS ═══
+        // CONTROL BACKGROUNDS
         resources["ControlFillColorDefault"] = bgElevated;
         resources["ControlFillColorSecondary"] = bgElevated;
         resources["ControlFillColorTertiary"] = bgHighlight;
@@ -201,19 +201,19 @@ public sealed class ThemeManagerService
         resources["ControlStrongStrokeColorDefault"] = textSecondary;
         resources["ControlStrongStrokeColorDisabled"] = bgHighlight;
 
-        // ═══ SUBTLE FILLS ═══
+        // SUBTLE FILLS
         resources["SubtleFillColorTransparent"] = transparent;
         resources["SubtleFillColorSecondary"] = bgHover;
         resources["SubtleFillColorTertiary"] = bgHighlight;
         resources["SubtleFillColorDisabled"] = transparent;
 
-        // ═══ ACCENT FILLS ═══
+        // ACCENT FILLS
         resources["AccentFillColorDefaultBrush"] = new SolidColorBrush(accent);
         resources["AccentFillColorSecondary"] = accentHover;
         resources["AccentFillColorTertiary"] = accent;
         resources["AccentFillColorDisabled"] = bgHighlight;
 
-        // ═══ ACCENT BUTTON ═══
+        // ACCENT BUTTON
         resources["AccentButtonBackground"] = accent;
         resources["AccentButtonBackgroundPointerOver"] = accent;
         resources["AccentButtonBackgroundPressed"] = accentHover;
@@ -229,7 +229,7 @@ public sealed class ThemeManagerService
         resources["AccentButtonBorderBrushPressed"] = transparent;
         resources["AccentButtonBorderBrushDisabled"] = transparent;
 
-        // ═══ CHECKBOX ═══
+        // CHECKBOX
         resources["CheckBoxCheckBackgroundFillUnchecked"] = bgElevated;
         resources["CheckBoxCheckBackgroundFillUncheckedPointerOver"] = bgElevated;
         resources["CheckBoxCheckBackgroundFillUncheckedPressed"] = bgElevated;
@@ -257,7 +257,7 @@ public sealed class ThemeManagerService
         resources["CheckBoxCheckGlyphForegroundCheckedPressed"] = accentButtonText;
         resources["CheckBoxCheckGlyphForegroundCheckedDisabled"] = textSecondary;
 
-        // ═══ TOGGLESWITCH ═══
+        // TOGGLESWITCH
         resources["ToggleSwitchContainerBackground"] = transparent;
         resources["ToggleSwitchContainerBackgroundPointerOver"] = transparent;
 
@@ -291,7 +291,7 @@ public sealed class ThemeManagerService
         resources["ToggleSwitchKnobFillOnPressed"] = accentButtonText;
         resources["ToggleSwitchKnobFillOnDisabled"] = textMuted;
 
-        // ═══ SLIDER ═══
+        // SLIDER
         resources["SliderTrackFill"] = bgHighlight;
         resources["SliderTrackFillPointerOver"] = bgHighlight;
         resources["SliderTrackFillPressed"] = bgHighlight;
@@ -307,7 +307,7 @@ public sealed class ThemeManagerService
         resources["SliderThumbBackgroundPressed"] = accentHover;
         resources["SliderThumbBackgroundDisabled"] = textSecondary;
 
-        // ═══ COMBOBOX ═══
+        // COMBOBOX
         resources["ComboBoxBackground"] = bgElevated;
         resources["ComboBoxBackgroundPointerOver"] = bgElevated;
         resources["ComboBoxBackgroundPressed"] = bgElevated;
@@ -342,7 +342,7 @@ public sealed class ThemeManagerService
         resources["ComboBoxItemForegroundSelectedPointerOver"] = accentButtonText;
         resources["ComboBoxItemForegroundSelectedPressed"] = accentButtonText;
 
-        // ═══ LISTBOX ═══
+        // LISTBOX
         resources["ListBoxBackground"] = transparent;
         resources["ListBoxBorderBrush"] = transparent;
 
@@ -364,7 +364,7 @@ public sealed class ThemeManagerService
         resources["ListBoxItemForegroundSelectedPressed"] = accentButtonText;
         resources["ListBoxItemForegroundSelectedDisabled"] = textSecondary;
 
-        // ═══ RADIOBUTTON ═══
+        // RADIOBUTTON
         resources["RadioButtonBackground"] = transparent;
         resources["RadioButtonBackgroundPointerOver"] = transparent;
         resources["RadioButtonBackgroundPressed"] = transparent;
@@ -400,7 +400,7 @@ public sealed class ThemeManagerService
         resources["RadioButtonCheckGlyphFillPressed"] = accent;
         resources["RadioButtonCheckGlyphFillDisabled"] = textMuted;
 
-        // ═══ BACKGROUNDS ═══
+        // BACKGROUNDS
         resources["SolidBackgroundFillColorBase"] = bgPrimary;
         resources["SolidBackgroundFillColorSecondary"] = bgSecondary;
         resources["SolidBackgroundFillColorTertiary"] = bgElevated;
@@ -416,11 +416,11 @@ public sealed class ThemeManagerService
 
         resources["DividerStrokeColorDefault"] = bgHighlight;
 
-        // ═══ FLYOUT / POPUP ═══
+        // FLYOUT / POPUP
         resources["FlyoutBackground"] = bgElevated;
         resources["FlyoutBorderThemeBrush"] = new SolidColorBrush(bgHighlight);
 
-        // ═══ MENU ═══
+        // MENU
         resources["MenuFlyoutPresenterBackground"] = bgElevated;
         resources["MenuFlyoutPresenterBorderBrush"] = new SolidColorBrush(bgHighlight);
         resources["MenuFlyoutItemBackground"] = transparent;
@@ -428,7 +428,7 @@ public sealed class ThemeManagerService
         resources["MenuFlyoutItemForeground"] = textPrimary;
         resources["MenuFlyoutItemForegroundPointerOver"] = textPrimary;
 
-        // ═══ BUTTON ═══
+        // BUTTON
         resources["ButtonBackground"] = bgElevated;
         resources["ButtonBackgroundPointerOver"] = bgElevated;
         resources["ButtonBackgroundPressed"] = bgHighlight;
@@ -444,26 +444,26 @@ public sealed class ThemeManagerService
         resources["ButtonBorderBrushPressed"] = accentHover;
         resources["ButtonBorderBrushDisabled"] = bgHighlight;
 
-        // ═══ CONTENT DIALOG ═══
+        // CONTENT DIALOG
         resources["ContentDialogBackground"] = bgElevated;
         resources["ContentDialogTopOverlay"] = bgElevated;
         resources["ContentDialogBorderBrush"] = bgHighlight;
         resources["ContentDialogForeground"] = textPrimary;
 
-        // ═══ INFOBADGE / NOTIFICATIONS ═══
+        // INFOBADGE / NOTIFICATIONS
         resources["InfoBadgeForeground"] = textDark;
         resources["InfoBarErrorSeverityIconBackground"] = textDark;
         resources["InfoBarWarningSeverityIconBackground"] = textDark;
         resources["InfoBarSuccessSeverityIconBackground"] = textDark;
         resources["InfoBarInformationalSeverityIconBackground"] = textDark;
 
-        // ═══ FOCUS VISUAL ═══
+        // FOCUS VISUAL
         resources["FocusVisualPrimaryBrush"] = new SolidColorBrush(accent);
         resources["FocusVisualSecondaryBrush"] = new SolidColorBrush(transparent);
         resources["SystemControlFocusVisualPrimaryBrush"] = new SolidColorBrush(accent) { Opacity = 0.85 };
         resources["SystemControlFocusVisualSecondaryBrush"] = new SolidColorBrush(transparent);
 
-        // ═══ MENU ITEM — убиваем фоновую заливку Fluent ═══
+        // MENU ITEM — убиваем фоновую заливку Fluent
         resources["MenuFlyoutItemBackground"] = transparent;
         resources["MenuFlyoutItemBackgroundPointerOver"] = transparent;
         resources["MenuFlyoutItemBackgroundPressed"] = transparent;
@@ -482,7 +482,7 @@ public sealed class ThemeManagerService
         try
         {
             var json = JsonSerializer.Serialize(theme, AppJsonContext.Default.ThemeSettings);
-            File.WriteAllText(G.FilePath.Theme, json);
+            AtomicFile.WriteText(G.FilePath.Theme, json, createBackup: true);
             _cachedTheme = theme;
             Log.Info($"Theme '{theme.Name}' saved.");
         }
@@ -514,6 +514,10 @@ public sealed class ThemeManagerService
         {
             if (File.Exists(G.FilePath.Theme))
                 File.Delete(G.FilePath.Theme);
+
+            var backupPath = string.Concat(G.FilePath.Theme, ".bak");
+            if (File.Exists(backupPath))
+                File.Delete(backupPath);
         }
         catch { /* Игнорируем ошибку удаления */ }
 
@@ -527,10 +531,10 @@ public sealed class ThemeManagerService
     /// </summary>
     public static IReadOnlyList<ThemeSettings> GetBuiltInPresets() =>
     [
-        // ═══ 1. PARALAX PURPLE (Default) ═══
+        // 1. PARALAX PURPLE (Default)
         new ThemeSettings { IsBuiltIn = true },
 
-        // ═══ 2. CLASSIC GREEN (Spotify-like) ═══
+        // 2. CLASSIC GREEN (Spotify-like)
         new ThemeSettings
         {
             Name = "Classic Green",
@@ -551,7 +555,7 @@ public sealed class ThemeManagerService
             TextDark = "#000000"
         },
 
-        // ═══ 3. OCEAN DEEP ═══
+        // 3. OCEAN DEEP
         new ThemeSettings
         {
             Name = "Ocean Deep",
@@ -572,7 +576,7 @@ public sealed class ThemeManagerService
             TextDark = "#001219"
         },
 
-        // ═══ 4. AMOLED BLACK ═══
+        // 4. AMOLED BLACK
         new ThemeSettings
         {
             Name = "AMOLED Black",
@@ -593,7 +597,7 @@ public sealed class ThemeManagerService
             TextDark = "#000000"
         },
 
-        // ═══ 5. WARM SUNSET ═══
+        // 5. WARM SUNSET
         new ThemeSettings
         {
             Name = "Warm Sunset",
@@ -614,7 +618,7 @@ public sealed class ThemeManagerService
             TextDark = "#1A1210"
         },
 
-        // ═══ 6. DRACULA ═══
+        // 6. DRACULA
         new ThemeSettings
         {
             Name = "Dracula",
@@ -642,9 +646,12 @@ public sealed class ThemeManagerService
     {
         try
         {
-            if (File.Exists(G.FilePath.Theme))
+            var json = AtomicFile.ReadTextWithFallback(G.FilePath.Theme, out bool recovered);
+            if (!string.IsNullOrWhiteSpace(json))
             {
-                var json = File.ReadAllText(G.FilePath.Theme);
+                if (recovered)
+                    Log.Warn("[ThemeManager] Recovered theme settings from backup (.bak)");
+
                 var theme = JsonSerializer.Deserialize(json, AppJsonContext.Default.ThemeSettings);
                 if (theme != null)
                 {

@@ -335,8 +335,8 @@
       },
       "Microsoft.Diagnostics.NETCore.Client": {
         "type": "Transitive",
-        "resolved": "0.2.661903",
-        "contentHash": "3ISv5jXar4dHBt/7Rz3YdnR3VpnC94BhSdSvuq8ZuKgCOcVuTdmgRnq0hUzJyL/z8Ge4VekFjhui2aufUXPdvg=="
+        "resolved": "0.2.731102",
+        "contentHash": "3Pp1cJUd5VJcvkIx2XXZrvYsfzQkc4mDON3Lmyn3LeVrOFCZA3Q/gUBQhgB/RG5nzNGKhpaeuVSiMB9fj7XPzw=="
       },
       "Microsoft.EntityFrameworkCore": {
         "type": "Transitive",
@@ -661,7 +661,7 @@
           "Avalonia": "[12.0.4, )",
           "CommunityToolkit.Mvvm": "[8.4.2, )",
           "Concentus": "[2.2.2, )",
-          "LMP.Decoders.AAC": "[0.0.340, )",
+          "LMP.Decoders.AAC": "[0.0.344, )",
           "Microsoft.Data.Sqlite": "[10.0.2, )",
           "Microsoft.Diagnostics.NETCore.Client": "[0.2.*, )",
           "Microsoft.EntityFrameworkCore": "[10.0.2, )",

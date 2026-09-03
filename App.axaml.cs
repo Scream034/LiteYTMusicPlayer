@@ -143,6 +143,10 @@ public partial class App : Application
             await Task.Run(async () => await library.InitializeAsync());
             _splash?.SetProgress(45);
 
+            // Применяем загруженные из БД настройки к аудио-движку
+            var audioEngine = AppEntry.Services.GetRequiredService<AudioEngine>();
+            audioEngine.InitializeVolumeFromSettings();
+
             // СИНХРОНИЗАЦИЯ ЯЗЫКА
             var savedLang = library.Settings.LanguageCode;
             var currentLang = L.CurrentLanguageCode;
@@ -289,7 +293,8 @@ public partial class App : Application
                         LocalAuthServer.DisposeIfCreated();
                         MemoryCleanupHelper.Dispose();
 
-                        // Асинхронно высвобождаем ресурсы и гарантированно записываем настройки в SQLite
+                        // Асинхронно высвобождаем аудиодвижок, кэш и гарантированно сбрасываем настройки в SQLite
+                        await audioEngine.DisposeAsync().ConfigureAwait(false);
                         await audioCacheManager.DisposeAsync().ConfigureAwait(false);
                         await library.DisposeAsync().ConfigureAwait(false);
                     }

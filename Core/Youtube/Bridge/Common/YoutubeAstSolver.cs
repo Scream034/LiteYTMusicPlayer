@@ -297,15 +297,15 @@ public static partial class YoutubeAstSolver
             }
         }
 
-// #if DEBUG
-//         // Временно
-//         var hubs = declaredToStmt
-//             .Where(kvp => kvp.Value.Count > 2)
-//             .OrderByDescending(kvp => kvp.Value.Count);
+        // #if DEBUG
+        //         // Временно
+        //         var hubs = declaredToStmt
+        //             .Where(kvp => kvp.Value.Count > 2)
+        //             .OrderByDescending(kvp => kvp.Value.Count);
 
-//         foreach (var hub in hubs)
-//             Log.Warn($"[AstSolver] Hub-node: '{hub.Key}' → {hub.Value.Count} statements");
-// #endif
+        //         foreach (var hub in hubs)
+        //             Log.Warn($"[AstSolver] Hub-node: '{hub.Key}' → {hub.Value.Count} statements");
+        // #endif
 
         var requiredIdentifiers = new HashSet<string>(32, StringComparer.Ordinal);
         var solverStatements = new List<Statement>();
@@ -412,19 +412,18 @@ public static partial class YoutubeAstSolver
 
         var result = sb.ToString();
 
-        if (G.Build.IsDebug)
+#if DEBUG
+        try
         {
-            try
-            {
-                var debugPath = Path.Combine(G.Folder.Logs, $"player_debug_{sts}.js");
-                File.WriteAllText(debugPath, result);
-                Log.Info($"[AstSolver] Preprocessed raw JS written to: {debugPath}");
-            }
-            catch (Exception ex)
-            {
-                Log.Warn($"[AstSolver] Failed to write raw JS debug file: {ex.Message}");
-            }
+            var debugPath = Path.Combine(G.Folder.Logs, $"player_debug_{sts}.js");
+            AtomicFile.WriteText(debugPath, result, createBackup: false);
+            Log.Info($"[AstSolver] Preprocessed raw JS written to: {debugPath}");
         }
+        catch (Exception ex)
+        {
+            Log.Warn($"[AstSolver] Failed to write raw JS debug file: {ex.Message}");
+        }
+#endif
 
         Log.Debug($"[AstSolver] Preprocessing complete. Final size: {result.Length / 1024} KB. Solvers - N: {nSolvers.Count}, Sig: {sigSolvers.Count}");
         return result;

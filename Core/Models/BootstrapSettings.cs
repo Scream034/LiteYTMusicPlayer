@@ -33,9 +33,12 @@ public sealed class BootstrapSettings
     {
         try
         {
-            if (File.Exists(FilePath))
+            var json = AtomicFile.ReadTextWithFallback(FilePath, out bool recovered);
+            if (!string.IsNullOrWhiteSpace(json))
             {
-                var json = File.ReadAllText(FilePath);
+                if (recovered)
+                    Log.Warn("[Bootstrap] Recovered settings from backup (.bak)");
+
                 var settings = JsonSerializer.Deserialize(json, AppJsonContext.Default.BootstrapSettings);
                 if (settings != null)
                 {
@@ -108,7 +111,7 @@ public sealed class BootstrapSettings
         try
         {
             var json = JsonSerializer.Serialize(this, AppJsonContext.Default.BootstrapSettings);
-            File.WriteAllText(FilePath, json);
+            AtomicFile.WriteText(FilePath, json, createBackup: true);
         }
         catch (Exception ex)
         {
