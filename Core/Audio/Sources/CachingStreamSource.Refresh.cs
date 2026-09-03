@@ -121,7 +121,14 @@ public sealed partial class CachingStreamSource
 
         try
         {
-            return await ExecuteRefreshAsync(ct).ConfigureAwait(false);
+            // Рефреш требует времени (QuickJS + BotGuard ~3-5 сек). 
+            // Используем lifetime токен с щедрым таймаутом, чтобы отмена отдельного Range/Seek 
+            // не срывала получение URL на 99% готовности.
+            using var refreshCts = CancellationTokenSource.CreateLinkedTokenSource(
+                _lifetimeCts?.Token ?? CancellationToken.None);
+            refreshCts.CancelAfter(TimeSpan.FromSeconds(20));
+
+            return await ExecuteRefreshAsync(refreshCts.Token).ConfigureAwait(false);
         }
         finally
         {
@@ -162,7 +169,9 @@ public sealed partial class CachingStreamSource
         // Небольшой delay: даём CDN время "переварить" новый URL.
         await Task.Delay(_config.PostRefreshDelayMs, ct).ConfigureAwait(false);
 
-        bool concurrentRefreshSucceeded = Volatile.Read(ref _consecutive403Count) == 0;
+        // Успех фиксируется ТОЛЬКО если URL реально присутствует и 403 сброшен
+        bool concurrentRefreshSucceeded = !string.IsNullOrWhiteSpace(_currentUrl)
+                                       && Volatile.Read(ref _consecutive403Count) == 0;
 
         Log.Debug($"[CachingSource] [{_trackId}] Concurrent refresh result: " +
                 $"{(concurrentRefreshSucceeded ? "success" : "failed")}");

@@ -14,7 +14,6 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
 {
     private readonly YoutubeProvider _youtube;
     private readonly AudioEngine _audioEngine;
-    private readonly DialogService _dialogService;
     private readonly NotificationService _notificationService;
     private readonly LibraryService _libraryService;
 
@@ -32,13 +31,11 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
     public PlaybackErrorOrchestrator(
          YoutubeProvider youtube,
          AudioEngine audioEngine,
-         DialogService dialogService,
          NotificationService notificationService,
          LibraryService libraryService)
     {
         _youtube = youtube ?? throw new ArgumentNullException(nameof(youtube));
         _audioEngine = audioEngine ?? throw new ArgumentNullException(nameof(audioEngine));
-        _dialogService = dialogService ?? throw new ArgumentNullException(nameof(dialogService));
         _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
         _libraryService = libraryService ?? throw new ArgumentNullException(nameof(libraryService));
 
@@ -321,9 +318,20 @@ public sealed class PlaybackErrorOrchestrator : IDisposable
 
     private async Task HandleBotDetectionAsync(BotDetectionException exception)
     {
-        Log.Warn($"[Orchestrator] Bot detection: {exception.FormatRemainingTime()}");
+        int waitSeconds = Math.Max(1, (int)Math.Ceiling(exception.RemainingCooldown.TotalSeconds));
+        Log.Warn($"[Orchestrator] Bot detection active: cooldown {waitSeconds}s. Showing non-blocking notification.");
+
         await InvokeOnUIAsync(_audioEngine.Stop);
-        await _dialogService.ShowBotDetectionCooldownAsync(exception.RemainingCooldown);
+
+        _notificationService.TryPlayErrorSound();
+
+        await _notificationService.ShowToastAsync(
+            titleKey: "Dialog_BotDetection_Title",
+            messageKey: "Dialog_BotDetection_Message",
+            severity: NotificationSeverity.Warning,
+            durationMs: Math.Min(waitSeconds * 1000, 10_000),
+            messageArgs: [waitSeconds],
+            recommendationKey: "Recommendation_CheckNetwork");
     }
 
     #endregion

@@ -41,12 +41,6 @@ public sealed class DialogService
     private readonly LocalAuthServer _localAuthServer;
     private readonly Func<DialogHostViewModel> _getDialogHost;
 
-    /// <summary>
-    /// Активный диалог BotDetection — синглтон для предотвращения дублей.
-    /// </summary>
-    private BotDetectionDialog? _activeBotDetectionDialog;
-    private readonly Lock _botDetectionLock = new();
-
     /// <param name="authService">Сервис авторизации — для проверки состояния входа в YouTube.</param>
     /// <param name="getDialogHost">
     /// Lazy accessor для DialogHostViewModel.
@@ -483,52 +477,6 @@ public sealed class DialogService
     #endregion
 
     #region Critical Dialogs (Modal Windows)
-
-    /// <summary>
-    /// Диалог ожидания bot detection cooldown.
-    /// <para><b>МОДАЛЬНЫЙ:</b> блокирует ВСЁ окно включая TopBar.</para>
-    /// </summary>
-    public async Task ShowBotDetectionCooldownAsync(TimeSpan waitTime)
-    {
-        await Dispatcher.UIThread.InvokeAsync(async () =>
-        {
-            var window = GetMainWindow();
-            if (window == null) return;
-
-            lock (_botDetectionLock)
-            {
-                if (_activeBotDetectionDialog is { IsVisible: true })
-                {
-                    _activeBotDetectionDialog.UpdateCountdown(
-                        VideoController.GetRemainingCooldown(),
-                        VideoController.CooldownDuration);
-                    return;
-                }
-
-                _activeBotDetectionDialog = new BotDetectionDialog
-                {
-                    DialogTitle = L["Dialog_BotDetection_Title"],
-                    Message = L["Dialog_BotDetection_Message"],
-                    Hint = L["Dialog_BotDetection_Hint"],
-                    CloseButtonText = L["Common_OK"]
-                };
-            }
-
-            _activeBotDetectionDialog.StartCountdown(waitTime);
-
-            try
-            {
-                await ShowModalSafeAsync<bool?>(_activeBotDetectionDialog, window);
-            }
-            finally
-            {
-                lock (_botDetectionLock)
-                {
-                    _activeBotDetectionDialog = null;
-                }
-            }
-        });
-    }
 
     /// <summary>
     /// Диалог ошибки недоступности стрима.

@@ -400,16 +400,27 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
         foreach (var clientName in clients)
         {
             // Пропускаем клиент, если он уже давал BotDetection в текущей сессии.
-            // Это предотвращает ~700 мс блокировку WEB_REMIX при каждом force-refresh.
+            // Предотвращает ~700 мс задержку перед переходом на WEB_REMIX.
+            bool skipAndroidVr = false;
             if (string.Equals(clientName, "ANDROID_VR", StringComparison.Ordinal)
-                && _androidVrSessionBotDetections > 0
-                && (DateTime.UtcNow - _androidVrLastBotDetection).TotalSeconds < AndroidVrCooldownSeconds)
+                && _androidVrSessionBotDetections > 0)
             {
-                Log.Debug($"[VideoController] [{videoId}] ANDROID_VR skipped — " +
-                        $"{_androidVrSessionBotDetections} BotDetection(s), " +
-                        $"cooldown {AndroidVrCooldownSeconds - (int)(DateTime.UtcNow - _androidVrLastBotDetection).TotalSeconds}s remaining");
+                lock (_stateLock)
+                {
+                    skipAndroidVr = (DateTime.UtcNow - _androidVrLastBotDetection).TotalSeconds < AndroidVrCooldownSeconds;
+                }
+            }
+
+            if (skipAndroidVr)
+            {
+                int remainingSec;
+                lock (_stateLock)
+                {
+                    remainingSec = AndroidVrCooldownSeconds - (int)(DateTime.UtcNow - _androidVrLastBotDetection).TotalSeconds;
+                }
+
+                Log.Debug($"[VideoController] [{videoId}] ANDROID_VR skipped (BotDetection active, {remainingSec}s cooldown remaining)");
                 errors.Add("ANDROID_VR: SKIPPED_BOT_DETECTION_COOLDOWN");
-                allBotDetection = true;
                 hasNonNetworkFailure = true;
                 continue;
             }
@@ -456,12 +467,18 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
             {
                 if (ex.Reason == LoginRequiredReason.BotDetection)
                 {
-                    // --- ANDROID_VR BotDetection Tracking ---
+                    // ANDROID_VR BotDetection Tracking
                     if (string.Equals(clientName, "ANDROID_VR", StringComparison.Ordinal))
+                    {
                         Interlocked.Increment(ref _androidVrSessionBotDetections);
+                        lock (_stateLock)
+                        {
+                            _androidVrLastBotDetection = DateTime.UtcNow;
+                        }
+                        Log.Warn($"[VideoController] ANDROID_VR hit bot detection ({_androidVrSessionBotDetections}). Entering {AndroidVrCooldownSeconds}s cooldown.");
+                    }
 
                     errors.Add($"{clientName}: BOT_DETECTION (LOGIN_REQUIRED)");
-                    // allBotDetection остаётся true
                 }
                 else
                 {

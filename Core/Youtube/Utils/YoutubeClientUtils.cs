@@ -158,19 +158,18 @@ public static class YoutubeClientUtils
 	public static bool RequiresAuth => CurrentProfile is YoutubeClientProfile.Web or YoutubeClientProfile.WebRemix;
 
 	/// <summary>
-	/// Клиенты для получения stream URLs.
-	/// ANDROID_VR первый — отдаёт прямые URL без sig cipher / n-token / PoToken.
-	/// Этот список НЕ зависит от <see cref="CurrentProfile"/> — профиль пользователя
-	/// влияет только на metadata/search/browse запросы через <see cref="GetPlayerResponseAsync"/>.
+	/// Клиенты для получения stream URLs по умолчанию (гостевой режим).
+	/// ANDROID_VR идёт первым для мгновенного старта (fast path без n-token/cipher),
+	/// WEB_REMIX выступает прозрачным fallback при bot challenge / age restriction.
 	/// </summary>
 	public static readonly string[] StreamFallbackClientsDefault =
 	[
 		"ANDROID_VR",
+		"WEB_REMIX",
 	];
 
 	/// <summary>
 	/// Stream fallback для авторизованных пользователей.
-	/// WEB_REMIX включён потому что с авторизацией pot не нужен.
 	/// </summary>
 	public static readonly string[] StreamFallbackClientsAuth =
 	[

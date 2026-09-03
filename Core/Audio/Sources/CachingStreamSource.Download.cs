@@ -346,8 +346,9 @@ public sealed partial class CachingStreamSource
 
         ct.ThrowIfCancellationRequested();
 
-        // Проактивная проверка: если URL протух, обновляем его ДО отправки HTTP-запроса
-        if (UrlEx.IsUrlExpiredOrExpiringSoon(_currentUrl, TimeSpan.FromMinutes(5)))
+        // Проактивная проверка: обновляем URL ДО отправки запроса только если URL реально есть, но протухает.
+        // Если URL пустой (partial cache bootstrap), получение пойдёт штатно через EnsureUrlAvailableAsync.
+        if (!string.IsNullOrWhiteSpace(_currentUrl) && UrlEx.IsUrlExpiredOrExpiringSoon(_currentUrl, TimeSpan.FromMinutes(5)))
         {
             Log.Info($"[CachingSource] [{_trackId}] URL expired/expiring soon. Proactive refresh before request...");
             var proactiveOutcome = await CoordinatedRefreshAsync(ct).ConfigureAwait(false);
