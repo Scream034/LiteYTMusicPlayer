@@ -1,62 +1,62 @@
 name: Release
 
 on:
-  release:
-    types: [created]
+    release:
+        types: [created]
 
 jobs:
-  publish:
-    runs-on: windows-latest
+    publish:
+        runs-on: windows-latest
 
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
 
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '11.0.x'
-          cache: true
-          cache-dependency-path: "**/packages.lock.json"
+            - uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: "11.0.x"
+                  cache: true
+                  cache-dependency-path: "**/packages.lock.json"
 
-      # === 7-Zip ===
-      - name: Setup 7-Zip
-        uses: milliewalky/setup-7-zip@v2
+            # === 7-Zip ===
+            - name: Setup 7-Zip
+              uses: milliewalky/setup-7-zip@v2
 
-      # === Версия (по количеству коммитов) ===
-      - name: Get Git Version Info
-        id: version
-        shell: pwsh
-        run: |
-          $commitCount = git rev-list --count HEAD
-          $shortHash = git rev-parse --short=7 HEAD
-          $fullVersion = "${commitCount}-${shortHash}"
-          
-          echo "VERSION=$commitCount" >> $env:GITHUB_ENV
-          echo "FULL_VERSION=$fullVersion" >> $env:GITHUB_ENV
+            # === Версия (по количеству коммитов) ===
+            - name: Get Git Version Info
+              id: version
+              shell: pwsh
+              run: |
+                  $commitCount = git rev-list --count HEAD
+                  $shortHash = git rev-parse --short=7 HEAD
+                  $fullVersion = "${commitCount}-${shortHash}"
 
-          Write-Host "Version: v$fullVersion"
+                  echo "VERSION=$commitCount" >> $env:GITHUB_ENV
+                  echo "FULL_VERSION=$fullVersion" >> $env:GITHUB_ENV
 
-      # === Сборка Release (Publish) ===
-      - name: Build Release Publish
-        run: ./build.bat publish nopause
+                  Write-Host "Version: v$fullVersion"
 
-      # === Архивация ===
-      - name: Archive Release
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "publish")) {
-            Write-Error "Publish folder not found! Build failed."
-            exit 1
-          }
-          
-          $archiveName = "LMP-v${{ env.FULL_VERSION }}.7z"
-          7z a -t7z -mx=9 $archiveName "publish/*"
-          
-          Write-Host "Created: $archiveName"
+            # === Сборка Release (Publish) ===
+            - name: Build Release Publish
+              run: ./build.bat publish nopause
 
-      # === Прикрепляем архив к релизу ===
-      - name: Upload Release Asset
-        uses: softprops/action-gh-release@v2
-        with:
-          files: LMP-v${{ env.FULL_VERSION }}.7z
+            # === Архивация ===
+            - name: Archive Release
+              shell: pwsh
+              run: |
+                  if (-not (Test-Path "publish")) {
+                    Write-Error "Publish folder not found! Build failed."
+                    exit 1
+                  }
+
+                  $archiveName = "LMP-v${{ env.FULL_VERSION }}.7z"
+                  7z a -t7z -mx=9 $archiveName "publish/*"
+
+                  Write-Host "Created: $archiveName"
+
+            # === Прикрепляем архив к релизу ===
+            - name: Upload Release Asset
+              uses: softprops/action-gh-release@v2
+              with:
+                  files: LMP-v${{ env.FULL_VERSION }}.7z

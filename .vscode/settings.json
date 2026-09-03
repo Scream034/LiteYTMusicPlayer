@@ -39,6 +39,9 @@
     "[bat]": {
         "files.encoding": "utf8bom"
     },
+    "[powershell]": {
+        "files.encoding": "utf8bom"
+    },
     "terminal.integrated.defaultProfile.windows": "Command Prompt",
     "terminal.integrated.profiles.windows": {
         "Command Prompt": {

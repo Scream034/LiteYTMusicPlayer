@@ -173,11 +173,40 @@ public sealed class AudioPipeline : IAsyncDisposable
                 options.StreamingConfig,
                 lifetimeCts.Token).ConfigureAwait(false);
 
-            if (!await source.InitializeAsync(lifetimeCts.Token).ConfigureAwait(false))
+            bool initialized;
+            try
+            {
+                initialized = await source.InitializeAsync(lifetimeCts.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is CdnUnavailableException or UrlExpiredException or HttpRequestException && urlRefresher != null)
+            {
+                // Если пользователь уже переключил трек — бросаем отмену сразу, не трогая сеть
+                lifetimeCts.Token.ThrowIfCancellationRequested();
+
+                Log.Warn($"[AudioPipeline] Initial source initialization failed ({ex.GetType().Name}: {ex.Message}). Proactively refreshing stream URL...");
+
+                var refreshedUrl = await urlRefresher(lifetimeCts.Token).ConfigureAwait(false);
+
+                // Если пока мы ждали сеть пользователь нажал «Next» — мгновенно выходим
+                lifetimeCts.Token.ThrowIfCancellationRequested();
+
+                if (!string.IsNullOrEmpty(refreshedUrl) && source is Sources.CachingStreamSource cachingSource)
+                {
+                    cachingSource.UpdateUrl(refreshedUrl);
+                    Log.Info($"[AudioPipeline] Proactive URL refreshed for {descriptor.TrackId}. Retrying source initialization...");
+                    initialized = await source.InitializeAsync(lifetimeCts.Token).ConfigureAwait(false);
+                }
+                else
+                {
+                    throw;
+                }
+            }
+
+            if (!initialized)
             {
                 lifetimeCts.Token.ThrowIfCancellationRequested();
                 ct.ThrowIfCancellationRequested();
-                throw new AudioSourceException("Failed to initialize audio source");
+                throw new AudioSourceException("Failed to initialize audio source: container parsing returned false");
             }
 
             decoder = CreateDecoder(source);
@@ -213,6 +242,7 @@ public sealed class AudioPipeline : IAsyncDisposable
         }
         catch (OperationCanceledException) { CleanupOnError(source, decoder, decodeBuffer, lifetimeCts); throw; }
         catch (AudioSourceException) { CleanupOnError(source, decoder, decodeBuffer, lifetimeCts); throw; }
+        catch (CdnUnavailableException) { CleanupOnError(source, decoder, decodeBuffer, lifetimeCts); throw; }
         catch (Exception ex)
         {
             CleanupOnError(source, decoder, decodeBuffer, lifetimeCts);

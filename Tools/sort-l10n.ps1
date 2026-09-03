@@ -1,3 +1,14 @@
+<#
+.SYNOPSIS
+    Скрипт для сортировки и группировки ключей в JSON-файлах локализации.
+
+.PARAMETER LocalizationDir
+    Путь к директории с файлами локализации.
+
+.EXAMPLE
+    .\Tools\sort-l10n.ps1
+#>
+
 param (
     [string]$LocalizationDir = "$PSScriptRoot\..\Assets\Localization"
 )
@@ -5,19 +16,19 @@ param (
 $ErrorActionPreference = "Stop"
 
 if (-not (Test-Path $LocalizationDir)) {
-    Write-Error "Localization directory not found: $LocalizationDir"
+    Write-Error "Директория локализации не найдена: $LocalizationDir"
     exit 1
 }
 
 $jsonFiles = Get-ChildItem -Path $LocalizationDir -Filter "*.json"
 
 foreach ($file in $jsonFiles) {
-    Write-Host "Processing: $($file.Name)..." -ForegroundColor Cyan
+    Write-Host "Обработка файла: $($file.Name)..." -ForegroundColor Cyan
 
     $rawContent = Get-Content -Path $file.FullName -Raw -Encoding UTF8
     $jsonObject = $rawContent | ConvertFrom-Json
 
-    # Universal property extraction compatible with Windows PowerShell 5.1
+    # Универсальное извлечение свойств для совместимости с Windows PowerShell 5.1
     $sortedProperties = $jsonObject.psobject.properties | Sort-Object Name
 
     $sb = [System.Text.StringBuilder]::new()
@@ -32,16 +43,16 @@ foreach ($file in $jsonFiles) {
         $key = $prop.Name
         $value = $prop.Value
 
-        # Extract prefix before '_' for block grouping
+        # Извлечение префикса до символа '_' для логической группировки блоков
         $prefix = if ($key.Contains("_")) { $key.Split("_")[0] } else { "Other" }
 
-        # Insert blank line when prefix changes
+        # Вставка пустой строки при смене префикса
         if ($previousPrefix -ne "" -and $prefix -ne $previousPrefix) {
             [void]$sb.AppendLine()
         }
         $previousPrefix = $prefix
 
-        # Handle value formatting
+        # Форматирование значений
         if ($null -eq $value) {
             $formattedValue = "null"
         } elseif ($value -is [bool]) {
@@ -59,9 +70,9 @@ foreach ($file in $jsonFiles) {
 
     [void]$sb.AppendLine("}")
 
-    # Save formatted JSON with UTF-8 encoding without BOM
+    # Сохранение отформатированного JSON в UTF-8 без BOM
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText($file.FullName, $sb.ToString(), $utf8NoBom)
 
-    Write-Host "Successfully sorted and grouped: $($file.Name)" -ForegroundColor Green
+    Write-Host "Успешно отсортировано и сгруппировано: $($file.Name)" -ForegroundColor Green
 }

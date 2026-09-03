@@ -1,127 +1,128 @@
 name: Dev Build
 
 on:
-  push:
-    branches: [ main, avalonia ]
-  workflow_dispatch:
+    push:
+        branches: [main, avalonia]
+    workflow_dispatch:
 
 permissions:
-  contents: write
+    contents: write
 
 jobs:
-  build:
-    runs-on: windows-latest
+    build:
+        runs-on: windows-latest
 
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: recursive
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  submodules: recursive
 
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '11.0.x'
-          cache: true
-          cache-dependency-path: "**/packages.lock.json"
+            - uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: "11.0.x"
+                  cache: true
+                  cache-dependency-path: "**/packages.lock.json"
 
-      # === Версия (просто номер коммита + хеш) ===
-      - name: Get Git Version Info
-        id: version
-        shell: pwsh
-        run: |
-          $commitCount = git rev-list --count HEAD
-          $shortHash = git rev-parse --short=7 HEAD
-          $fullVersion = "${commitCount}-${shortHash}"
-          
-          echo "VERSION=$commitCount" >> $env:GITHUB_ENV
-          echo "FULL_VERSION=$fullVersion" >> $env:GITHUB_ENV
-          echo "COMMIT_HASH=$shortHash" >> $env:GITHUB_ENV
-          echo "COMMIT_COUNT=$commitCount" >> $env:GITHUB_ENV
+            # === Версия (просто номер коммита + хеш) ===
+            - name: Get Git Version Info
+              id: version
+              shell: pwsh
+              run: |
+                  $commitCount = git rev-list --count HEAD
+                  $shortHash = git rev-parse --short=7 HEAD
+                  $fullVersion = "${commitCount}-${shortHash}"
 
-          Write-Host "Version: v$fullVersion"
+                  echo "VERSION=$commitCount" >> $env:GITHUB_ENV
+                  echo "FULL_VERSION=$fullVersion" >> $env:GITHUB_ENV
+                  echo "COMMIT_HASH=$shortHash" >> $env:GITHUB_ENV
+                  echo "COMMIT_COUNT=$commitCount" >> $env:GITHUB_ENV
 
-      # === 7-Zip ===
-      - name: Setup 7-Zip
-        uses: milliewalky/setup-7-zip@v2
+                  Write-Host "Version: v$fullVersion"
 
-      # === Сборка ===
-      - name: Build Debug
-        run: ./build.bat debug nopause
+            # === 7-Zip ===
+            - name: Setup 7-Zip
+              uses: milliewalky/setup-7-zip@v2
 
-      - name: Build Release (Publish)
-        run: ./build.bat publish nopause
+            # === Сборка ===
+            - name: Build Debug
+              run: ./build.bat debug nopause
 
-      # === Архивация ===
-      - name: Archive Debug Build
-        shell: pwsh
-        run: |
-          $debugPath = "bin/Debug/net11.0"
-          if (-not (Test-Path $debugPath)) {
-            Write-Error "Debug build folder not found at $debugPath"
-            exit 1
-          }
-          7z a -t7z -mx=9 "LMP-Debug-v${{ env.FULL_VERSION }}.7z" "$debugPath/*"
-          Write-Host "Created: LMP-Debug-v${{ env.FULL_VERSION }}.7z"
+            - name: Build Release (Publish)
+              run: ./build.bat publish nopause
 
-      - name: Archive Release Build
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "publish")) {
-            Write-Error "Publish folder not found!"
-            exit 1
-          }
-          7z a -t7z -mx=9 "LMP-Release-v${{ env.FULL_VERSION }}.7z" "publish/*"
-          Write-Host "Created: LMP-Release-v${{ env.FULL_VERSION }}.7z"
+            # === Архивация ===
+            - name: Archive Debug Build
+              shell: pwsh
+              run: |
+                  $debugPath = "bin/Debug/net11.0"
+                  if (-not (Test-Path $debugPath)) {
+                    Write-Error "Debug build folder not found at $debugPath"
+                    exit 1
+                  }
+                  7z a -t7z -mx=9 "LMP-Debug-v${{ env.FULL_VERSION }}.7z" "$debugPath/*"
+                  Write-Host "Created: LMP-Debug-v${{ env.FULL_VERSION }}.7z"
 
-      # === Артефакты для Actions ===
-      - name: Upload Debug Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: LMP-Debug-v${{ env.FULL_VERSION }}
-          path: LMP-Debug-v${{ env.FULL_VERSION }}.7z
+            - name: Archive Release Build
+              shell: pwsh
+              run: |
+                  if (-not (Test-Path "publish")) {
+                    Write-Error "Publish folder not found!"
+                    exit 1
+                  }
+                  7z a -t7z -mx=9 "LMP-Release-v${{ env.FULL_VERSION }}.7z" "publish/*"
+                  Write-Host "Created: LMP-Release-v${{ env.FULL_VERSION }}.7z"
 
-      - name: Upload Release Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: LMP-Release-v${{ env.FULL_VERSION }}
-          path: LMP-Release-v${{ env.FULL_VERSION }}.7z
+            # === Артефакты для Actions ===
+            - name: Upload Debug Artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: LMP-Debug-v${{ env.FULL_VERSION }}
+                  path: LMP-Debug-v${{ env.FULL_VERSION }}.7z
 
-      # === Удаляем старые ассеты (чтобы не накапливались) ===
-      - name: Delete Old Dev Assets
-        uses: mknejp/delete-release-assets@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: dev
-          assets: |
-            LMP-Debug-*.7z
-            LMP-Release-*.7z
-          fail-if-no-release: false
+            - name: Upload Release Artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: LMP-Release-v${{ env.FULL_VERSION }}
+                  path: LMP-Release-v${{ env.FULL_VERSION }}.7z
 
-      # === Создание / Обновление Dev Pre-release ===
-      - name: Create/Update Dev Pre-release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: dev
-          name: "Dev Build v${{ env.FULL_VERSION }}"
-          prerelease: true
-          make_latest: false
-          fail_on_unmatched_files: true
-          files: |
-            LMP-Debug-v${{ env.FULL_VERSION }}.7z
-            LMP-Release-v${{ env.FULL_VERSION }}.7z
-          body: |
-            **Автоматическая dev-сборка**
+            # === Удаляем старые ассеты (чтобы не накапливались) ===
+            - name: Delete Old Dev Assets
+              uses: mknejp/delete-release-assets@v1
+              with:
+                  token: ${{ secrets.GITHUB_TOKEN }}
+                  tag: dev
+                  assets: |
+                      LMP-Debug-*.7z
+                      LMP-Release-*.7z
+                  fail-if-no-release: false
 
-            | Параметр | Значение |
-            |----------|----------|
-            | Версия | `v${{ env.FULL_VERSION }}` |
-            | Коммит | `${{ env.COMMIT_HASH }}` |
-            | Всего коммитов | ${{ env.COMMIT_COUNT }} |
-            | Ветка | `${{ github.ref_name }}` |
-            | Дата | ${{ github.event.head_commit.timestamp }} |
+            # === Создание Dev Pre-release по номеру коммита ===
+            - name: Create/Update Dev Pre-release
+              uses: softprops/action-gh-release@v2
+              with:
+                  tag_name: dev-${{ env.COMMIT_COUNT }}
+                  name: "Dev Build v${{ env.FULL_VERSION }}"
+                  prerelease: true
+                  make_latest: false
+                  fail_on_unmatched_files: true
+                  files: |
+                      LMP-Debug-v${{ env.FULL_VERSION }}.7z
+                      LMP-Release-v${{ env.FULL_VERSION }}.7z
+                  body: |
+                      **Автоматическая dev-сборка**
 
-            ⚠️ **Тестовая сборка — не для продакшена!**
+                      | Параметр | Значение |
+                      |----------|----------|
+                      | Версия | `v${{ env.FULL_VERSION }}` |
+                      | Тег | `dev-${{ env.COMMIT_COUNT }}` |
+                      | Коммит | `${{ env.COMMIT_HASH }}` |
+                      | Всего коммитов | ${{ env.COMMIT_COUNT }} |
+                      | Ветка | `${{ github.ref_name }}` |
+                      | Дата | ${{ github.event.head_commit.timestamp }} |
 
-            ### Скачать
-            - **[LMP-Release-v${{ env.FULL_VERSION }}.7z](https://github.com/${{ github.repository }}/releases/download/dev/LMP-Release-v${{ env.FULL_VERSION }}.7z)** — рекомендуется
-            - [LMP-Debug-v${{ env.FULL_VERSION }}.7z](https://github.com/${{ github.repository }}/releases/download/dev/LMP-Debug-v${{ env.FULL_VERSION }}.7z) — для отладки
+                      ⚠️ **Тестовая сборка — не для продакшена!**
+
+                      ### Скачать
+                      - **[LMP-Release-v${{ env.FULL_VERSION }}.7z](https://github.com/${{ github.repository }}/releases/download/dev/LMP-Release-v${{ env.FULL_VERSION }}.7z)** — рекомендуется
+                      - [LMP-Debug-v${{ env.FULL_VERSION }}.7z](https://github.com/${{ github.repository }}/releases/download/dev/LMP-Debug-v${{ env.FULL_VERSION }}.7z) — для отладки

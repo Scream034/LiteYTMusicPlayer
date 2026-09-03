@@ -1,18 +1,18 @@
 ﻿<#
 .SYNOPSIS
-    Проверяет локализационные JSON файлы на мёртвые и недостающие ключи.
+    Проверяет локализационные JSON-файлы на мёртвые и недостающие ключи.
 
 .PARAMETER Fix
-    Удалить мёртвые ключи из JSON файлов автоматически.
+    Автоматически удалить мёртвые ключи из JSON-файлов.
 
 .PARAMETER Master
     Мастер-язык (по умолчанию: ru).
 
 .PARAMETER L10nDir
-    Путь к папке с JSON файлами относительно корня проекта.
+    Путь к папке с JSON-файлами относительно корня проекта.
 
 .PARAMETER SourceDirs
-    Папки с исходниками через запятую.
+    Папки с исходным кодом через запятую.
 
 .EXAMPLE
     .\Tools\find-dead-l10n.ps1
@@ -30,27 +30,27 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-#  Хелперы вывода 
+# --- Вспомогательные функции вывода ---
 
 function Write-Dead([string]$location, [string]$key) {
-    Write-Host ("  {0,-9} {1,-55} {2}" -f "DEAD", $location, $key) -ForegroundColor DarkYellow
+    Write-Host ("  {0,-9} {1,-55} {2}" -f "МЁРТВЫЙ", $location, $key) -ForegroundColor DarkYellow
 }
 
 function Write-Missing([string]$location, [string]$key) {
-    Write-Host ("  {0,-9} {1,-55} {2}" -f "MISSING", $location, $key) -ForegroundColor Red
+    Write-Host ("  {0,-9} {1,-55} {2}" -f "ПРОПУЩЕН", $location, $key) -ForegroundColor Red
 }
 
-#  Пути 
+# --- Инициализация путей ---
 
 $root    = Split-Path $PSScriptRoot -Parent
 $l10nDir = Join-Path $root $L10nDir
 
 Write-Host ""
-Write-Host "  Project root : $root"    -ForegroundColor Gray
-Write-Host "  L10n dir     : $l10nDir" -ForegroundColor Gray
-Write-Host "  Master lang  : $Master"  -ForegroundColor Gray
+Write-Host "  Корень проекта : $root"    -ForegroundColor Gray
+Write-Host "  Папка локал.   : $l10nDir" -ForegroundColor Gray
+Write-Host "  Мастер-язык    : $Master"  -ForegroundColor Gray
 
-#  Загрузка JSON 
+# --- Загрузка JSON-словарей ---
 
 function Load-Json([string]$path) {
     $json = Get-Content $path -Raw -Encoding UTF8
@@ -64,7 +64,7 @@ function Load-Json([string]$path) {
 
 $jsonFiles = @(Get-ChildItem $l10nDir -Filter "*.json" | Sort-Object Name)
 if ($jsonFiles.Count -eq 0) {
-    Write-Host "  No JSON files found in $l10nDir" -ForegroundColor Red
+    Write-Host "   JSON-файлы не найдены в директории $l10nDir" -ForegroundColor Red
     exit 1
 }
 
@@ -72,19 +72,19 @@ $langData = @{}
 foreach ($f in $jsonFiles) {
     $code            = $f.BaseName
     $langData[$code] = Load-Json $f.FullName
-    Write-Host "  Loaded $($f.Name)  ($($langData[$code].Count) keys)" -ForegroundColor Gray
+    Write-Host "  Загружен $($f.Name)  ($($langData[$code].Count) ключей)" -ForegroundColor Gray
 }
 
 if (-not $langData.ContainsKey($Master)) {
-    Write-Host "  Master language '$Master' not found" -ForegroundColor Red
+    Write-Host "  Мастер-язык '$Master' не найден среди файлов локализации" -ForegroundColor Red
     exit 1
 }
 
-$masterDict = $langData[$Master]
+$masterDict   = $langData[$Master]
 $allKnownKeys = [System.Collections.Generic.HashSet[string]]::new()
 foreach ($k in $masterDict.Keys) { [void]$allKnownKeys.Add($k) }
 
-#  Сбор исходников 
+# --- Сбор исходных файлов ---
 
 $allFiles = [System.Collections.Generic.List[string]]::new()
 foreach ($dir in ($SourceDirs -split ",")) {
@@ -98,33 +98,18 @@ Get-ChildItem $root -Filter "*.cs"    -File | ForEach-Object { $allFiles.Add($_.
 Get-ChildItem $root -Filter "*.axaml" -File | ForEach-Object { $allFiles.Add($_.FullName) }
 
 $sourceFiles = $allFiles | Sort-Object -Unique
-Write-Host "  Source files : $(@($sourceFiles).Count)  (.cs + .axaml)" -ForegroundColor Gray
+Write-Host "  Исходных файлов: $(@($sourceFiles).Count)  (.cs + .axaml)" -ForegroundColor Gray
 
-#  Паттерны регулярных выражений 
+# --- Регулярные выражения для поиска ключей ---
 
 $patterns = @(
-    # SL["Key"] / L["Key"] / LocalizationService.Instance["Key"] (включая многострочные пробелы)
     '(?:SL|L|LocalizationService\.Instance)\s*\[\s*"([A-Za-z][A-Za-z0-9_]+)"\s*\]',
-
-    # .Get("Key") / .RawGet("Key") / .GetPlural("Key") (с полной поддержкой переносов строк \s*)
     '\.(?:Get|RawGet|GetPlural)\(\s*"([A-Za-z][A-Za-z0-9_]+)"',
-
-    # {Binding SL[Key]} / {Binding L[Key]} / {Binding Path=SL[Key]}
     '(?:SL|L)\[([A-Za-z][A-Za-z0-9_]+)\]',
-
-    # {l:Loc Key} / {l:Loc Key=Foo}
     '\{l:Loc\s+(?:Key=)?([A-Za-z][A-Za-z0-9_]+)',
-
-    # ShowToastAsync("TitleKey", "MessageKey", ...)
     'ShowToastAsync\(\s*"([A-Za-z][A-Za-z0-9_]+)"\s*,\s*"([A-Za-z][A-Za-z0-9_]+)"',
-
-    # ShowPlaybackErrorAsync("TitleKey", "MessageKey", ...)
     'ShowPlaybackErrorAsync\(\s*"([A-Za-z][A-Za-z0-9_]+)"\s*,\s*"([A-Za-z][A-Za-z0-9_]+)"',
-
-    # titleKey = "Key" / messageKey: "Key" / recommendationKey = "Key"
     '(?i)(?:title|message|recommendation)Key\s*[=:]\s*"([A-Za-z][A-Za-z0-9_]+)"',
-
-    # Одиночные строки, ternary, switch expression
     '^\s*(?:[?:,]|=>)?\s*"([A-Z][a-z][A-Za-z0-9]*(?:_[A-Za-z][A-Za-z0-9]*)+)"\s*[,;]?\s*$',
     '[?:]\s*"([A-Z][a-z][A-Za-z0-9]*(?:_[A-Za-z][A-Za-z0-9]*)+)"',
     '=>\s*"([A-Z][a-z][A-Za-z0-9]*(?:_[A-Za-z][A-Za-z0-9]*)+)"',
@@ -133,6 +118,7 @@ $patterns = @(
 
 $usedKeys = @{}
 
+# Белый список динамических ключей
 $dynamicKeys = @(
     "Home_Greeting_Morning", "Home_Greeting_Afternoon", "Home_Greeting_Evening",
     "NetProfile_Low", "NetProfile_Medium", "NetProfile_High", "NetProfile_Ultra",
@@ -166,20 +152,16 @@ function Test-PluralSuffix([string]$key) {
     return $false
 }
 
-#  Сканирование исходников (Многострочное с поддержкой -Raw) 
+# --- Сканирование исходного кода ---
 
 foreach ($filePath in $sourceFiles) {
     $relPath = $filePath.Substring($root.Length).TrimStart('\')
-    
-    # Считываем весь файл целиком как единую строку
     $content = Get-Content $filePath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
     if ([string]::IsNullOrEmpty($content)) { continue }
 
     foreach ($pattern in $patterns) {
-        # Применяем регулярные выражения с флагом Multiline
         $matches = [regex]::Matches($content, $pattern, 'Multiline')
         foreach ($m in $matches) {
-            # Вычисляем точный номер строки по индексу совпадения в тексте
             $lineNum = [regex]::Matches($content.Substring(0, $m.Index), "\r?\n").Count + 1
 
             for ($g = 1; $g -lt $m.Groups.Count; $g++) {
@@ -192,9 +174,9 @@ foreach ($filePath in $sourceFiles) {
     }
 }
 
-Write-Host "  Unique keys referenced in code : $($usedKeys.Count)" -ForegroundColor Gray
+Write-Host "  Уникальных ключей в коде    : $($usedKeys.Count)" -ForegroundColor Gray
 
-#  Анализ 
+# --- Анализ совпадений ---
 
 $deadKeys    = [System.Collections.Generic.List[string]]::new()
 $missingKeys = [System.Collections.Generic.List[string]]::new()
@@ -222,26 +204,26 @@ foreach ($code in $langData.Keys) {
     $other = $langData[$code]
     foreach ($key in @($masterDict.Keys)) {
         if (-not $other.ContainsKey($key)) {
-            Write-Host "  [!!] $code.json missing key: $key" -ForegroundColor Yellow
+            Write-Host "  [!!] В файле $code.json отсутствует ключ: $key" -ForegroundColor Yellow
             $syncIssues++
         }
     }
     foreach ($key in @($other.Keys)) {
         if (-not $masterDict.ContainsKey($key)) {
-            Write-Host "  [!!] $code.json has extra key: $key" -ForegroundColor Yellow
+            Write-Host "  [!!] В файле $code.json обнаружен лишний ключ: $key" -ForegroundColor Yellow
             $syncIssues++
         }
     }
 }
 
-#  Репорт: мёртвые 
+# --- Вывод отчетов ---
 
 if ($deadKeys.Count -gt 0) {
     Write-Host ""
-    Write-Host ("-- Dead keys ({0}) " -f $deadKeys.Count).PadRight(60, '-') -ForegroundColor DarkYellow
-    Write-Host "   In $Master.json but never referenced in source code." -ForegroundColor Gray
+    Write-Host ("-- Мёртвые ключи ({0}) " -f $deadKeys.Count).PadRight(60, '-') -ForegroundColor DarkYellow
+    Write-Host "   Присутствуют в $Master.json, но не используются в исходном коде." -ForegroundColor Gray
     Write-Host ""
-    Write-Host ("  {0,-9} {1,-55} {2}" -f "STATUS", "LOCATION", "KEY") -ForegroundColor DarkGray
+    Write-Host ("  {0,-9} {1,-55} {2}" -f "СТАТУС", "РАСПОЛОЖЕНИЕ", "КЛЮЧ") -ForegroundColor DarkGray
 
     $jsonLines = @(Get-Content (Join-Path $l10nDir "$Master.json") -Encoding UTF8)
     foreach ($key in $deadKeys) {
@@ -256,34 +238,30 @@ if ($deadKeys.Count -gt 0) {
     }
 }
 
-#  Репорт: недостающие 
-
 if ($missingKeys.Count -gt 0) {
     Write-Host ""
-    Write-Host ("-- Missing keys ({0}) " -f $missingKeys.Count).PadRight(60, '-') -ForegroundColor Red
-    Write-Host "   Referenced in code but absent from $Master.json." -ForegroundColor Gray
+    Write-Host ("-- Пропущенные ключи ({0}) " -f $missingKeys.Count).PadRight(60, '-') -ForegroundColor Red
+    Write-Host "   Используются в коде, но отсутствуют в $Master.json." -ForegroundColor Gray
     Write-Host ""
-    Write-Host ("  {0,-9} {1,-55} {2}" -f "STATUS", "LOCATION", "KEY") -ForegroundColor DarkGray
+    Write-Host ("  {0,-9} {1,-55} {2}" -f "СТАТУС", "РАСПОЛОЖЕНИЕ", "КЛЮЧ") -ForegroundColor DarkGray
 
     foreach ($key in ($missingKeys | Sort-Object)) {
-        $loc = if ($usedKeys.ContainsKey($key)) { $usedKeys[$key] } else { "unknown" }
+        $loc = if ($usedKeys.ContainsKey($key)) { $usedKeys[$key] } else { "неизвестно" }
         Write-Missing $loc $key
     }
 }
 
-#  Репорт: plural FP 
-
 if ($pluralFP -gt 0) {
     Write-Host ""
-    Write-Host ("-- Plural false positives skipped ({0}) " -f $pluralFP).PadRight(60, '-') -ForegroundColor DarkGray
-    Write-Host "   Auto-generated GetPlural suffixes (handled by fallback)." -ForegroundColor Gray
+    Write-Host ("-- Пропущенные Plural-формы ({0}) " -f $pluralFP).PadRight(60, '-') -ForegroundColor DarkGray
+    Write-Host "   Автоматические суффиксные формы множественного числа." -ForegroundColor Gray
 }
 
-#  Fix mode 
+# --- Автоматическое исправление (если передан ключ -Fix) ---
 
 if ($Fix -and $deadKeys.Count -gt 0) {
     Write-Host ""
-    Write-Host "-- Applying fixes " -ForegroundColor Cyan
+    Write-Host "-- Применение автоисправлений " -ForegroundColor Cyan
 
     foreach ($code in $langData.Keys) {
         $dict    = $langData[$code]
@@ -339,29 +317,29 @@ if ($Fix -and $deadKeys.Count -gt 0) {
             }
 
             [System.IO.File]::WriteAllLines($filePath, $result, [System.Text.Encoding]::UTF8)
-            Write-Host "  [FIX] Removed $removed dead keys from $code.json" -ForegroundColor Green
+            Write-Host "  [УСПЕХ] Удалено мертвых ключей: $removed из файла $code.json" -ForegroundColor Green
         }
     }
 }
 
-#  Итог 
+# --- Итоговая сводка ---
 
 Write-Host ""
 if ($syncIssues -eq 0) {
-    Write-Host "  [OK] All language files are in sync." -ForegroundColor Green
+    Write-Host "  [ОК] Все языковые файлы синхронизированы." -ForegroundColor Green
 } else {
-    Write-Host "  [!!] Language files are OUT OF SYNC." -ForegroundColor Red
+    Write-Host "  [!!] Языковые файлы РАССИНХРОНИЗИРОВАНЫ." -ForegroundColor Red
 }
 
 Write-Host ""
 Write-Host ("-" * 53) -ForegroundColor DarkGray
-Write-Host "  Summary"                                                                               -ForegroundColor White
-Write-Host "    Master keys  ($Master)  : $($masterDict.Count)"                                     -ForegroundColor Gray
-Write-Host "    Keys in code       : $($usedKeys.Count)"                                            -ForegroundColor Gray
-Write-Host "    Dead keys          : $($deadKeys.Count)"    -ForegroundColor $(if ($deadKeys.Count    -eq 0) { "Green" } else { "DarkYellow" })
-Write-Host "    Missing keys       : $($missingKeys.Count)" -ForegroundColor $(if ($missingKeys.Count -eq 0) { "Green" } else { "Red" })
-Write-Host "    Plural FP skipped  : $pluralFP"             -ForegroundColor Gray
-Write-Host "    Sync issues        : $syncIssues"           -ForegroundColor $(if ($syncIssues         -eq 0) { "Green" } else { "Red" })
+Write-Host "  Итоговая статистика"                                                                    -ForegroundColor White
+Write-Host "    Ключей в мастере ($Master) : $($masterDict.Count)"                                     -ForegroundColor Gray
+Write-Host "    Использовано в коде        : $($usedKeys.Count)"                                            -ForegroundColor Gray
+Write-Host "    Мёртвых ключей             : $($deadKeys.Count)"    -ForegroundColor $(if ($deadKeys.Count    -eq 0) { "Green" } else { "DarkYellow" })
+Write-Host "    Пропущенных ключей         : $($missingKeys.Count)" -ForegroundColor $(if ($missingKeys.Count -eq 0) { "Green" } else { "Red" })
+Write-Host "    Пропущено Plural FP        : $pluralFP"             -ForegroundColor Gray
+ZWrite-Host "    Ошибок синхронизации       : $syncIssues"           -ForegroundColor $(if ($syncIssues         -eq 0) { "Green" } else { "Red" })
 Write-Host ""
 
 exit ($deadKeys.Count + $missingKeys.Count + $syncIssues)

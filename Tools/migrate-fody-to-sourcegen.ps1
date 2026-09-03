@@ -1,18 +1,20 @@
 <#
 .SYNOPSIS
-    Migrates [Reactive] properties from ReactiveUI.Fody to ReactiveUI.SourceGenerators.
+    Инструмент миграции реактивных свойств с ReactiveUI.Fody на ReactiveUI.SourceGenerators.
+
 .DESCRIPTION
-    - Adds 'partial' to all [Reactive] property declarations.
-    - Adds 'partial' to the DIRECTLY containing class/record declaration only,
-      using brace-depth tracking to avoid false positives on nested types
-      (e.g. 'private record struct' inside the target class).
-    - Handles combined attributes: [JsonIgnore, Reactive], [Reactive, JsonIgnore].
-    - Removes 'using ReactiveUI.Fody.*' directives.
-    - Safe to run multiple times (idempotent).
+    - До модификации добавляет ключевое слово 'partial' ко всем свойствам с атрибутом [Reactive].
+    - Добавляет 'partial' строго к объявляющему классу/структуре/записи, используя анализ глубин вложенности фигурных скобок.
+    - Корректно обрабатывает комбинированные атрибуты ([JsonIgnore, Reactive], [Reactive, JsonIgnore]).
+    - Удаляет using-директивы 'ReactiveUI.Fody.*'.
+    - Идемпотентен (безопасен для многократного запуска).
+
 .PARAMETER Root
-    Root directory of the solution. Defaults to parent of Tools/.
+    Корневая директория проекта. По умолчанию: родительская папка Tools/.
+
 .PARAMETER DryRun
-    Preview changes without modifying files.
+    Предпросмотр изменений без изменения файлов.
+
 .EXAMPLE
     .\Tools\migrate-fody-to-sourcegen.ps1 -DryRun
     .\Tools\migrate-fody-to-sourcegen.ps1
@@ -27,16 +29,16 @@ $ErrorActionPreference = 'Stop'
 
 Write-Host ""
 Write-Host "===============================================" -ForegroundColor Cyan
-Write-Host "  Fody -> SourceGenerators Migration Tool     " -ForegroundColor Cyan
+Write-Host "  Мигратор Fody -> SourceGenerators           " -ForegroundColor Cyan
 Write-Host "===============================================" -ForegroundColor Cyan
 Write-Host ""
 
 if ($DryRun) {
-    Write-Host "[MODE] Dry Run - no files will be modified" -ForegroundColor Yellow
+    Write-Host "[РЕЖИМ] Сухой запуск (Dry Run) — файлы не изменяются" -ForegroundColor Yellow
     Write-Host ""
 }
 
-# ── Collect .cs files (no regex character classes - use Split to avoid PS quirk) ──
+# --- Сбор файлов .cs (с исключением папок bin и obj) ---
 $files = Get-ChildItem -Path $Root -Filter "*.cs" -Recurse | Where-Object {
     $segments = $_.FullName.Split([System.IO.Path]::DirectorySeparatorChar)
     -not ($segments -contains 'bin' -or $segments -contains 'obj')
@@ -54,11 +56,7 @@ foreach ($file in $files) {
     $lines   = [System.IO.File]::ReadAllLines($file.FullName)
     $changed = $false
 
-    # ── Build brace-depth map ──
-    # lineDepths[i] = nesting depth BEFORE processing line i.
-    # File-scoped namespaces (namespace X;) add no depth.
-    # Traditional namespace { } blocks add 1.
-    # This correctly handles all real-world layouts.
+    # --- Построение карты глубины вложенности фигурных скобок ---
     $lineDepths = [int[]]::new($lines.Count)
     $depth = 0
     for ($i = 0; $i -lt $lines.Count; $i++) {
@@ -68,7 +66,6 @@ foreach ($file in $files) {
         $depth += ($open - $close)
     }
 
-    # ── Collect line indices by category ──
     $classLineIndices    = [System.Collections.Generic.List[int]]::new()
     $reactiveLineIndices = [System.Collections.Generic.List[int]]::new()
     $fodyUsingIndices    = [System.Collections.Generic.List[int]]::new()
@@ -76,30 +73,27 @@ foreach ($file in $files) {
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
 
-        # [Reactive] property — standalone or in combined attribute list
         if ($line -match '\[.*\bReactive\b.*\]\s*public\s') {
             $reactiveLineIndices.Add($i)
         }
 
-        # class / record / struct declarations (any access modifier)
         if ($line -match '^\s*(public|internal|private|protected)\s+.*\b(class|record|struct)\s+\w+') {
             $classLineIndices.Add($i)
         }
 
-        # ReactiveUI.Fody using directives
         if ($line -match '^\s*using\s+ReactiveUI\.Fody') {
             $fodyUsingIndices.Add($i)
         }
     }
 
-    # ── Step 1: Mark Fody using lines for removal ──
+    # --- Шаг 1: Удаление using-директив Fody ---
     foreach ($i in $fodyUsingIndices) {
         $lines[$i] = $null
         $totalUsingRemovals++
         $changed = $true
     }
 
-    # ── Step 2: Add 'partial' to [Reactive] property declarations ──
+    # --- Шаг 2: Добавление 'partial' к реактивным свойствам ---
     foreach ($i in $reactiveLineIndices) {
         $line = $lines[$i]
         if ($null -ne $line -and $line -match '\[.*\bReactive\b.*\]\s*public\s+(?!partial\b)') {
@@ -109,23 +103,7 @@ foreach ($file in $files) {
         }
     }
 
-    # ── Step 3: Add 'partial' to the directly containing class declaration ──
-    #
-    # Key invariant: a [Reactive] property at brace-depth D is directly contained by
-    # the class/record/struct declaration at brace-depth (D-1).
-    #
-    # Example (file-scoped namespace, no extra braces):
-    #   public sealed class AudioEngine {      <- lineDepth=0, opens { -> depth 1
-    #       record struct ContinuationUrlResult(...)  <- lineDepth=1, no body braces
-    #       [Reactive] public partial TrackInfo? CurrentTrack  <- lineDepth=1
-    #
-    # For [Reactive] at depth 1: containingClass must be at depth 1-1=0.
-    #   AudioEngine:            lineDepth=0 == 0  -> MATCH (patched)
-    #   ContinuationUrlResult:  lineDepth=1 != 0  -> SKIP (correctly ignored)
-    #
-    # This is robust for: file-scoped namespaces, traditional namespace{} blocks,
-    # nested classes, and record structs with primary constructors (no body braces).
-
+    # --- Шаг 3: Добавление 'partial' к содержащему классу ---
     $patchedClasses = [System.Collections.Generic.HashSet[int]]::new()
 
     foreach ($rLine in $reactiveLineIndices) {
@@ -135,7 +113,6 @@ foreach ($file in $files) {
 
         foreach ($cLine in $classLineIndices) {
             if ($cLine -lt $rLine -and $lineDepths[$cLine] -eq $targetClassDepth) {
-                # Keep iterating to find the NEAREST preceding match
                 $containingIdx = $cLine
             }
         }
@@ -151,37 +128,36 @@ foreach ($file in $files) {
         }
     }
 
-    # ── Write ──
+    # --- Запись результатов ---
     if ($changed) {
-        # Filter out lines marked $null (removed Fody usings)
         $outputLines = $lines | Where-Object { $null -ne $_ }
         $rel = $file.FullName.Substring($Root.Length).TrimStart([char]'\', [char]'/')
 
         if ($DryRun) {
-            Write-Host "  [DRY]  $rel" -ForegroundColor Yellow
+            Write-Host "  [ПРЕВС] $rel" -ForegroundColor Yellow
         }
         else {
             $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
             [System.IO.File]::WriteAllLines($file.FullName, $outputLines, $utf8NoBom)
-            Write-Host "  [OK]   $rel" -ForegroundColor Green
+            Write-Host "  [ОК]    $rel" -ForegroundColor Green
         }
         $filesModified++
     }
 }
 
-# ── Summary ──
+# --- Сводка выполнения ---
 Write-Host ""
 Write-Host "===============================================" -ForegroundColor Cyan
-Write-Host "  Files:       $filesModified" -ForegroundColor White
-Write-Host "  Properties:  $totalPropertyChanges  (+partial)" -ForegroundColor White
-Write-Host "  Classes:     $totalClassChanges  (+partial)" -ForegroundColor White
-Write-Host "  Usings:      $totalUsingRemovals  (removed Fody)" -ForegroundColor White
+Write-Host "  Файлов изменено : $filesModified"          -ForegroundColor White
+Write-Host "  Свойств патронировано: $totalPropertyChanges (+partial)" -ForegroundColor White
+Write-Host "  Классов патронировано: $totalClassChanges    (+partial)" -ForegroundColor White
+Write-Host "  Удалено using   : $totalUsingRemovals  (Fody)" -ForegroundColor White
 Write-Host "===============================================" -ForegroundColor Cyan
 
 if ($DryRun) {
-    Write-Host "  Dry run - no files were modified" -ForegroundColor Yellow
+    Write-Host "  Сухой запуск завершен — файлы не изменены." -ForegroundColor Yellow
 }
 else {
-    Write-Host "  Done. Run dotnet build to verify." -ForegroundColor Green
+    Write-Host "  Миграция завершена. Выполните dotnet build для проверки." -ForegroundColor Green
 }
 Write-Host ""
