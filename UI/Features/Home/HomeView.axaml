@@ -49,6 +49,7 @@
             <controls:TrackListControl
                 Margin="24,12,24,0"
                 Items="{Binding Items}"
+                FilterText="{Binding FilterQuery}"
                 IsLoading="{Binding IsLoading}"
                 EnableReordering="{Binding CanReorderItems}"
                 MoveItemCommand="{Binding MoveItemCommand}" />

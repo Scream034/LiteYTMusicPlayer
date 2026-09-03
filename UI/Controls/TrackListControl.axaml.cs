@@ -176,6 +176,19 @@ public partial class TrackListControl : UserControl
         set => SetValue(IsPlaylistContextProperty, value);
     }
 
+    public static readonly StyledProperty<string?> FilterTextProperty =
+        AvaloniaProperty.Register<TrackListControl, string?>(nameof(FilterText));
+
+    /// <summary>
+    /// Текст локального фильтра. При изменении сбрасывает вертикальный скролл в начало,
+    /// предотвращая десинхронизацию виртуализации ItemsRepeater.
+    /// </summary>
+    public string? FilterText
+    {
+        get => GetValue(FilterTextProperty);
+        set => SetValue(FilterTextProperty, value);
+    }
+
     public static readonly StyledProperty<bool> IsQueueContextProperty =
         AvaloniaProperty.Register<TrackListControl, bool>(nameof(IsQueueContext), false);
 
@@ -311,7 +324,11 @@ public partial class TrackListControl : UserControl
     {
         base.OnPropertyChanged(change);
 
-        if (change.Property == ItemsProperty)
+        if (change.Property == FilterTextProperty)
+        {
+            ResetScrollPosition();
+        }
+        else if (change.Property == ItemsProperty)
         {
             UpdateItemsContext();
             Dispatcher.UIThread.Post(CheckInitialLoad, DispatcherPriority.Background);
@@ -323,21 +340,22 @@ public partial class TrackListControl : UserControl
         }
         else if (change.Property == ReachedEndProperty)
         {
-            if (_scrollViewer != null)
-                UpdateFooterVisibility(_scrollViewer.Offset);
+            var sv = EnsureScrollViewer();
+            if (sv != null)
+                UpdateFooterVisibility(sv.Offset);
             else
                 IsFooterVisible = ReachedEnd;
         }
         else if (change.Property == EnableSnapScrollProperty)
         {
-            if (_scrollViewer == null) return;
+            var sv = EnsureScrollViewer();
+            if (sv == null) return;
             _snapScroll?.Dispose();
             _snapScroll = change.GetNewValue<bool>()
-                ? new SnapScrollHelper(_scrollViewer)
+                ? new SnapScrollHelper(sv)
                 : null;
         }
 
-        // Синхронно обновляем вычисляемую видимость контейнера футера при изменении зависимых свойств
         if (change.Property == IsLoadingMoreProperty || change.Property == IsFooterVisibleProperty)
         {
             RaisePropertyChanged(IsLoaderOrFooterVisibleProperty, !IsLoaderOrFooterVisible, IsLoaderOrFooterVisible);
@@ -368,7 +386,7 @@ public partial class TrackListControl : UserControl
 
     #endregion
 
-    #region Drag & Drop Helpers (Координаты с выводом отладочной информации)
+    #region Drag & Drop Helpers
 
     /// <summary>
     /// Безопасно вычисляет положение курсора мыши относительно начала <see cref="ItemsRepeater"/>,
@@ -378,15 +396,15 @@ public partial class TrackListControl : UserControl
     {
         if (_repeater == null)
         {
-            Log.Debug($"[{context}] GetSafePositionInRepeater: _repeater is null!");
+            Log.Trace($"[{context}] GetSafePositionInRepeater: _repeater is null!");
             return default;
         }
 
         var rawPos = e.GetPosition(_repeater);
         var scrollViewer = _scrollViewer ?? this.FindAncestorOfType<ScrollViewer>();
 
-        Log.Debug($"[{context}] === Safe Position Calc Started ===");
-        Log.Debug($"[{context}] Raw e.GetPosition(_repeater): X={rawPos.X:F1}, Y={rawPos.Y:F1}");
+        Log.Trace($"[{context}] === Safe Position Calc Started ===");
+        Log.Trace($"[{context}] Raw e.GetPosition(_repeater): X={rawPos.X:F1}, Y={rawPos.Y:F1}");
 
         if (scrollViewer != null)
         {
@@ -394,12 +412,12 @@ public partial class TrackListControl : UserControl
             var repeaterOrigin = _repeater.TranslatePoint(new Point(0, 0), scrollViewer);
             var offset = scrollViewer.Offset;
 
-            Log.Debug($"[{context}] ScrollViewer.Offset.Y: {offset.Y:F1}");
-            Log.Debug($"[{context}] Pointer pos in ScrollViewer: X={posInScrollViewer.X:F1}, Y={posInScrollViewer.Y:F1}");
+            Log.Trace($"[{context}] ScrollViewer.Offset.Y: {offset.Y:F1}");
+            Log.Trace($"[{context}] Pointer pos in ScrollViewer: X={posInScrollViewer.X:F1}, Y={posInScrollViewer.Y:F1}");
 
             if (repeaterOrigin.HasValue)
             {
-                Log.Debug($"[{context}] _repeater origin inside ScrollViewer: X={repeaterOrigin.Value.X:F1}, Y={repeaterOrigin.Value.Y:F1}");
+                Log.Trace($"[{context}] _repeater origin inside ScrollViewer: X={repeaterOrigin.Value.X:F1}, Y={repeaterOrigin.Value.Y:F1}");
                 var calculated = new Point(
                     posInScrollViewer.X - repeaterOrigin.Value.X,
                     posInScrollViewer.Y - repeaterOrigin.Value.Y);
@@ -425,7 +443,7 @@ public partial class TrackListControl : UserControl
     private double GetSafeElementRelativeY(DragEventArgs e, Control element, Point safePosInRepeater, int idx, string context)
     {
         var scrollViewer = _scrollViewer ?? this.FindAncestorOfType<ScrollViewer>();
-        Log.Debug($"[{context}] GetSafeElementRelativeY for item index={idx}");
+        Log.Trace($"[{context}] GetSafeElementRelativeY for item index={idx}");
 
         if (scrollViewer != null)
         {
@@ -434,7 +452,7 @@ public partial class TrackListControl : UserControl
             if (elementOrigin.HasValue)
             {
                 double calculatedRelY = posInScrollViewer.Y - elementOrigin.Value.Y;
-                Log.Debug($"[{context}] posInScrollViewer.Y={posInScrollViewer.Y:F1}, elementOrigin.Y={elementOrigin.Value.Y:F1} -> calculatedRelY={calculatedRelY:F1}");
+                Log.Trace($"[{context}] posInScrollViewer.Y={posInScrollViewer.Y:F1}, elementOrigin.Y={elementOrigin.Value.Y:F1} -> calculatedRelY={calculatedRelY:F1}");
                 return calculatedRelY;
             }
             else
@@ -444,7 +462,7 @@ public partial class TrackListControl : UserControl
         }
 
         double fallbackRelY = safePosInRepeater.Y - (idx * ItemHeight);
-        Log.Debug($"[{context}] Fallback calculation used: safePosInRepeater.Y={safePosInRepeater.Y:F1} - (idx*{ItemHeight}) -> fallbackRelY={fallbackRelY:F1}");
+        Log.Trace($"[{context}] Fallback calculation used: safePosInRepeater.Y={safePosInRepeater.Y:F1} - (idx*{ItemHeight}) -> fallbackRelY={fallbackRelY:F1}");
         return fallbackRelY;
     }
 
@@ -467,7 +485,7 @@ public partial class TrackListControl : UserControl
         if (!EnableReordering) return;
         if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
 
-        // Фикс: Игнорируем запуск перетаскивания, если клик произошел по интерактивным элементам (кнопкам Play, Like, More)
+        // Игнорируем запуск перетаскивания, если клик произошел по интерактивным элементам (кнопкам Play, Like, More)
         if (e.Source is Visual visual)
         {
             var parent = visual;
@@ -656,25 +674,6 @@ public partial class TrackListControl : UserControl
         }
     }
 
-    private void HandleAutoScroll(DragEventArgs e)
-    {
-        if (_scrollViewer == null) return;
-        var pos = e.GetPosition(_scrollViewer);
-
-        if (pos.Y < AutoScrollMargin)
-        { _autoScrollOffset = -AutoScrollAmount; _autoScrollTimer?.Start(); }
-        else if (pos.Y > _scrollViewer.Bounds.Height - AutoScrollMargin)
-        { _autoScrollOffset = AutoScrollAmount; _autoScrollTimer?.Start(); }
-        else
-        { _autoScrollOffset = 0; _autoScrollTimer?.Stop(); }
-    }
-
-    private void OnAutoScrollTick(object? sender, EventArgs e)
-    {
-        if (_scrollViewer == null || _autoScrollOffset == 0) return;
-        _scrollViewer.Offset += new Vector(0, _autoScrollOffset);
-    }
-
     private int CalculateDropIndex(DragEventArgs e, int oldIndex)
     {
         if (_repeater == null)
@@ -746,6 +745,84 @@ public partial class TrackListControl : UserControl
         _lastHighlightedItem.Classes.Remove("insert-top");
         _lastHighlightedItem.Classes.Remove("insert-bottom");
         _lastHighlightedItem = null;
+    }
+
+    #endregion
+
+    #region Scroll
+
+    /// <summary>
+    /// Гарантирует наличие ссылки на родительский ScrollViewer.
+    /// </summary>
+    private ScrollViewer? EnsureScrollViewer()
+    {
+        _scrollViewer ??= this.FindAncestorOfType<ScrollViewer>();
+        return _scrollViewer;
+    }
+
+    /// <summary>
+    /// Прокручивает список так, чтобы трек с указанным индексом отобразился на экране.
+    /// </summary>
+    /// <param name="index">Индекс целевого элемента.</param>
+    /// <param name="smooth">Использовать плавное перемещение (true) или мгновенное позиционирование (false).</param>
+    public void ScrollToTrackIndex(int index, bool smooth = true)
+    {
+        var sv = EnsureScrollViewer();
+        if (sv == null || index < 0) return;
+        if (Items is not ICollection col || index >= col.Count) return;
+
+        // Позиционируем с запасом в 1 трек сверху для контекста
+        double targetY = Math.Max(0, (index * ItemHeight) - ItemHeight);
+
+        // Даём лейауту посчитать Extent, если он ещё нулевой
+        double maxScroll = Math.Max(0, sv.Extent.Height - sv.Viewport.Height);
+        if (maxScroll > 0)
+        {
+            targetY = Math.Clamp(targetY, 0, maxScroll);
+        }
+
+        if (smooth && _snapScroll != null)
+        {
+            _snapScroll.AnimateTo(targetY);
+        }
+        else
+        {
+            _snapScroll?.CancelAnimation();
+            sv.Offset = new Vector(sv.Offset.X, targetY);
+        }
+
+        _repeater?.InvalidateMeasure();
+    }
+
+    /// <summary>
+    /// Сбрасывает вертикальную позицию скролла в начало списка при обновлении фильтра.
+    /// </summary>
+    public void ResetScrollPosition()
+    {
+        var sv = EnsureScrollViewer();
+        if (sv == null) return;
+
+        _snapScroll?.CancelAnimation();
+        sv.Offset = new Vector(sv.Offset.X, 0);
+    }
+
+    private void HandleAutoScroll(DragEventArgs e)
+    {
+        if (_scrollViewer == null) return;
+        var pos = e.GetPosition(_scrollViewer);
+
+        if (pos.Y < AutoScrollMargin)
+        { _autoScrollOffset = -AutoScrollAmount; _autoScrollTimer?.Start(); }
+        else if (pos.Y > _scrollViewer.Bounds.Height - AutoScrollMargin)
+        { _autoScrollOffset = AutoScrollAmount; _autoScrollTimer?.Start(); }
+        else
+        { _autoScrollOffset = 0; _autoScrollTimer?.Stop(); }
+    }
+
+    private void OnAutoScrollTick(object? sender, EventArgs e)
+    {
+        if (_scrollViewer == null || _autoScrollOffset == 0) return;
+        _scrollViewer.Offset += new Vector(0, _autoScrollOffset);
     }
 
     #endregion
@@ -894,6 +971,26 @@ public partial class TrackListControl : UserControl
             Dispatcher.UIThread.Post(InitializeScrollBar, DispatcherPriority.Loaded);
         }
 
+        /// <summary>
+        /// Запускает плавную анимацию до заданной координаты Y.
+        /// </summary>
+        public void AnimateTo(double targetY)
+        {
+            double maxScroll = GetMaxScrollY();
+            _targetY = Math.Clamp(targetY, 0, maxScroll);
+            StartAnimation();
+        }
+
+        /// <summary>
+        /// Мгновенно останавливает интерполяцию скролла.
+        /// </summary>
+        public void CancelAnimation()
+        {
+            StopAnimation();
+            _targetY = _sv.Offset.Y;
+            _currentY = _sv.Offset.Y;
+        }
+
         private void InitializeScrollBar()
         {
             if (_disposed) return;
@@ -1026,7 +1123,7 @@ public partial class TrackListControl : UserControl
 
             // Frame-rate independent LERP формула
             double factor = 1.0 - Math.Exp(-Smoothness * dt);
-            _currentY = _currentY + (_targetY - _currentY) * factor;
+            _currentY += (_targetY - _currentY) * factor;
 
             ApplyOffset(_currentY);
 

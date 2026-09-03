@@ -167,8 +167,8 @@ public sealed partial class PlaylistViewModel : TrackListReorderableViewModel, I
     }
 
     private GridLength _headerHeight;
-    private const double HeaderHeightMin = 280;
-    private const double HeaderHeightMax = 400;
+    private const double HeaderHeightMin = 215;
+    private const double HeaderHeightMax = 270;
 
     #endregion
 
@@ -223,7 +223,7 @@ public sealed partial class PlaylistViewModel : TrackListReorderableViewModel, I
             LibService.Settings.PlaylistHeaderHeight,
             HeaderHeightMin, HeaderHeightMax));
 
-        // ═══ CanExecute observables ═══
+        // CanExecute observables
         var hasTracks = this.WhenAnyValue(x => x.TrackCount, static c => c > 0)
             .ObserveOn(RxSchedulers.MainThreadScheduler);
 
@@ -235,7 +235,7 @@ public sealed partial class PlaylistViewModel : TrackListReorderableViewModel, I
                 static (canRefresh, isSyncing) => canRefresh && !isSyncing)
             .ObserveOn(RxSchedulers.MainThreadScheduler);
 
-        // ═══ Commands ═══
+        // Commands
         PlayAllCommand = CreateCommand(
             ReactiveCommand.CreateFromTask(PlayAllAsync, hasTracks));
 
@@ -313,7 +313,7 @@ public sealed partial class PlaylistViewModel : TrackListReorderableViewModel, I
             }
         }));
 
-        // ═══ Reactive subscriptions ═══
+        // Reactive subscriptions
         this.WhenAnyValue(x => x.CanEdit, x => x.FilterQuery)
             .Subscribe(_ => CanReorderItems = CanEdit && CanReorder)
             .DisposeWith(Disposables);
@@ -467,13 +467,13 @@ public sealed partial class PlaylistViewModel : TrackListReorderableViewModel, I
 
             _currentPlaylist = playlist;
 
-            // ═══ Metadata ═══
+            // Metadata
             PlaylistName = playlist.Name;
             ThumbnailUrl = playlist.ThumbnailUrl;
             Description = playlist.Description;
             IsLikedPlaylist = playlistId == LibraryService.LikedPlaylistId;
 
-            // ═══ Author & Ownership ═══
+            // Author & Ownership
             AuthorName = playlist.Author;
             ShowAuthor = !string.IsNullOrEmpty(playlist.Author);
             IsReadOnly = playlist.IsReadOnly;
@@ -481,7 +481,7 @@ public sealed partial class PlaylistViewModel : TrackListReorderableViewModel, I
             IsPrivate = playlist.Visibility == PlaylistVisibility.Private;
             IsUnlisted = playlist.Visibility == PlaylistVisibility.Unlisted;
 
-            // ═══ Cloud & Sync ═══
+            // Cloud & Sync
             IsTwoWaySynced = playlist.SyncMode == PlaylistSyncMode.TwoWaySync;
             HasCloudSource = playlist.HasCloudLink
                              || (IsLikedPlaylist && _auth.IsAuthenticated);
@@ -490,15 +490,15 @@ public sealed partial class PlaylistViewModel : TrackListReorderableViewModel, I
             HasStatusChips = IsReadOnly || IsPrivate || IsUnlisted || HasCloudSource;
             LastSyncedText = FormatRelativeTime(playlist.LastSyncedAtUtc);
 
-            // ═══ Stats: views & date ═══
+            // Stats: views & date
             FormattedViewCount = FormatViewCount(playlist.ViewCount);
             FormattedReleaseDate = FormatReleaseDate(playlist.ReleaseDate);
 
-            // ═══ Derived (одним блоком в конце) ═══
+            // Derived (одним блоком в конце)
             this.RaisePropertyChanged(nameof(PlaylistYoutubeUrl));
             HasYoutubeLink = PlaylistYoutubeUrl is not null;
 
-            // ═══ Tracks ═══
+            // Tracks
             var allIds = await LibService.GetPlaylistTrackIdsAsync(playlistId, ct);
             loadCt.ThrowIfCancellationRequested();
 

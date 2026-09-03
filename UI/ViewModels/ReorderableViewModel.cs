@@ -314,20 +314,12 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
     }
 
     /// <summary>
-    /// Инкрементально синхронизирует видимую коллекцию без полного Reset.
-    /// 
-    /// <para><b>Fast path:</b> если состав и порядок уже идентичны, не делает ничего.</para>
-    /// <para><b>Batch path:</b> если между текущим и новым списком нет ни одного
-    /// общего VM-экземпляра, выполняет полную замену через <see cref="AvaloniaList{T}.Clear"/>
-    /// и <see cref="AvaloniaList{T}.AddRange(IEnumerable{T})"/>.</para>
-    /// <para><b>Incremental path:</b> если пересечение есть, сначала удаляет из текущего
-    /// списка все VM, отсутствующие в целевом, затем выравнивает порядок через
-    /// <see cref="AvaloniaList{T}.Move"/> и вставляет недостающие элементы через
-    /// <see cref="AvaloniaList{T}.Insert"/>.</para>
-    /// 
-    /// <para>Такой порядок делает алгоритм self-healing после последовательности
-    /// reorder/filter/clear-filter и не полагается на то, что лишние элементы
-    /// уже находятся только в хвосте.</para>
+    /// Синхронизирует видимую коллекцию ViewModel.
+    /// <para>
+    /// Для больших скачков размера списка (фильтрация, сброс поиска) использует атомарную замену,
+    /// исключая лавину одиночных событий Add/Remove, которая ломает виртуализатор ItemsRepeater.
+    /// Поштучный путь сохраняется только для единичных перестановок и мутаций.
+    /// </para>
     /// </summary>
     /// <param name="newItems">Целевой видимый порядок VM.</param>
     private void SyncVisibleItems(List<TViewModel> newItems)
@@ -360,13 +352,19 @@ public abstract class ReorderableViewModel<TSource, TViewModel> : ViewModelBase,
             return;
         }
 
-        if (!HasVisibleOverlap(newItems))
+        // Fast batch path:
+        // 1. Текущий список был крошечным (1-3 элемента) и резко вырос.
+        // 2. Скачок элементов больше порога (быстрый сброс фильтра).
+        // 3. Нет пересечения по ссылкам.
+        // Предотвращает шторм поштучных Add-событий в ItemsRepeater.
+        if (Items.Count <= 3 || Math.Abs(Items.Count - newItems.Count) > 10 || !HasVisibleOverlap(newItems))
         {
             Items.Clear();
             Items.AddRange(newItems);
             return;
         }
 
+        // Incremental path: только для точечных локальных изменений (drag-and-drop, удаление одной строки)
         for (int i = Items.Count - 1; i >= 0; i--)
         {
             if (!ContainsReference(newItems, Items[i]))

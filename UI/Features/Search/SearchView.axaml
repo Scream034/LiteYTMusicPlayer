@@ -10,7 +10,7 @@
 
     <Grid RowDefinitions="Auto, *">
 
-        <!-- ═══ HEADER ═══ -->
+        <!-- HEADER -->
         <StackPanel Grid.Row="0" Margin="24,20,24,8" Spacing="12">
 
             <Grid ColumnDefinitions="*, Auto">
@@ -149,7 +149,7 @@
             </Border>
         </StackPanel>
 
-        <!-- ═══ RESULTS LIST ═══ -->
+        <!-- RESULTS LIST -->
         <ScrollViewer Grid.Row="1" Margin="24,0">
             <i:Interaction.Behaviors>
                 <b:InfiniteScrollBehavior
@@ -159,6 +159,7 @@
 
             <controls:TrackListControl
                 Items="{Binding Items}"
+                FilterText="{Binding FilterQuery}"
                 IsLoading="{Binding IsLoading}"
                 IsLoadingMore="{Binding IsLoadingMore}"
                 IsFetchingFromNetwork="{Binding IsFetchingFromNetwork}"
