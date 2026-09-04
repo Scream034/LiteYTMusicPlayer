@@ -14,7 +14,7 @@ internal static class CdnConnectionPreWarmer
     private const int TunnelDeadTimeoutThreshold = 2;
 
     private static readonly TimeSpan WarmCooldown = TimeSpan.FromSeconds(60);
-    private static readonly TimeSpan WarmTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan WarmTimeout = TimeSpan.FromMilliseconds(1500);
     private static readonly TimeSpan SpeculativeThrottle = TimeSpan.FromSeconds(30);
 
     private static DateTime _lastSpeculativeWarmTime = DateTime.MinValue;

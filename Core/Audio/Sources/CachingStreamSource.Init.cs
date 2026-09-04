@@ -62,7 +62,7 @@ public sealed partial class CachingStreamSource
                 if (!string.IsNullOrEmpty(_currentUrl))
                 {
                     bool mediaAvailable = await Http.MediaPathProbe
-                        .IsMediaAvailableAsync(_currentUrl, timeoutMs: 4000, _lifetimeCts.Token)
+                        .IsMediaAvailableAsync(_currentUrl, timeoutMs: 1500, _lifetimeCts.Token)
                         .ConfigureAwait(false);
 
                     if (!mediaAvailable)
@@ -106,6 +106,19 @@ public sealed partial class CachingStreamSource
             Log.Info($"[CachingSource] Initialized: duration={DurationMs}ms, " +
                      $"cached={_cacheEntry.DownloadProgress:F0}%");
             return true;
+        }
+        catch (Exceptions.CdnUnavailableException)
+        {
+            // Пробрасываем наружу без изменений для добавления хоста в CdnBlacklist и failover-ретрая
+            throw;
+        }
+        catch (Exceptions.UrlExpiredException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {

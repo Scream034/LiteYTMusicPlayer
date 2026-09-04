@@ -332,6 +332,15 @@ internal static class SessionCacheStore
             if (entry is null || entry.Variants.Count == 0)
                 return null;
 
+            // Если CDN-хост манифеста уже заблокирован ТСПУ (в CdnBlacklist),
+            // немедленно сбрасываем кэш и не делаем bypass — нужен свежий API resolve с другим хостом
+            if (!string.IsNullOrEmpty(entry.CdnHost) && AudioSourceFactory.CdnBlacklist.IsBlocked(entry.CdnHost))
+            {
+                Log.Warn($"[SessionCache] Manifest CDN host '{entry.CdnHost}' is blacklisted. Dropping cached manifest for {trackId}.");
+                DropMustHoldLock(trackId);
+                return null;
+            }
+
             // Мгновенная инвалидация без выполнения сетевого зонда, если срок жизни ссылки истек
             if (entry.ExpireUtc <= DateTime.UtcNow)
             {

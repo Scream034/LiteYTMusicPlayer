@@ -180,14 +180,18 @@ public sealed class AudioPipeline : IAsyncDisposable
             }
             catch (Exception ex) when (ex is CdnUnavailableException or UrlExpiredException or HttpRequestException && urlRefresher != null)
             {
-                // Если пользователь уже переключил трек — бросаем отмену сразу, не трогая сеть
+                // Если сбой произошёл из-за блокировки CDN — немедленно заносим хост в блэклист ДО запроса рефреша
+                if (ex is CdnUnavailableException cdnEx && !string.IsNullOrEmpty(cdnEx.Host))
+                {
+                    AudioSourceFactory.CdnBlacklist.MarkBlocked(cdnEx.Host);
+                    Log.Warn($"[AudioPipeline] CDN host '{cdnEx.Host}' blacklisted on pipeline init failure.");
+                }
+
                 lifetimeCts.Token.ThrowIfCancellationRequested();
 
                 Log.Warn($"[AudioPipeline] Initial source initialization failed ({ex.GetType().Name}: {ex.Message}). Proactively refreshing stream URL...");
 
                 var refreshedUrl = await urlRefresher(lifetimeCts.Token).ConfigureAwait(false);
-
-                // Если пока мы ждали сеть пользователь нажал «Next» — мгновенно выходим
                 lifetimeCts.Token.ThrowIfCancellationRequested();
 
                 if (!string.IsNullOrEmpty(refreshedUrl) && source is Sources.CachingStreamSource cachingSource)

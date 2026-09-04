@@ -472,7 +472,7 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
         ResumePlaybackSequence(pipeline, startTimers: true, configurePipeline: false, trackId: _currentTrackId);
     }
 
-    private async Task HandleStopAsync()
+    private Task HandleStopAsync()
     {
         SetPlaybackIntent(PlaybackIntent.Stop);
         CancelActiveSeek();
@@ -480,11 +480,17 @@ public sealed partial class AudioPlayer : IAsyncDisposable, IDisposable
 
         var pipeline = Interlocked.Exchange(ref _activePipeline, null);
         if (pipeline != null)
-            await pipeline.DisposeAsync().ConfigureAwait(false);
+        {
+            // Не блокируем командный цикл ожиданием завершения сетевых запросов и дренажа диска старого источника (до 1-2 сек).
+            // Утилизация безопасно завершается в фоновом Task.Run.
+            TrackAndFirePipelineDispose(pipeline);
+        }
 
         _sharedBackend.Flush();
         _currentTrackId = null;
         SetState(PlayerState.Idle);
+
+        return Task.CompletedTask;
     }
 
     /// <summary>

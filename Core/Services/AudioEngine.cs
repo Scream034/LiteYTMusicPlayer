@@ -422,12 +422,26 @@ public sealed partial class AudioEngine : ReactiveObject, ISuspendable, IDisposa
     private int BeginNewSession()
     {
         int session = _session.BeginNew();
+        CancellationTokenSource? oldCts;
+
         lock (_sessionLock)
         {
-            _sessionCts?.Cancel();
-            _sessionCts?.Dispose();
+            oldCts = _sessionCts;
             _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
         }
+
+        if (oldCts != null)
+        {
+            // Отмену и закрытие сокетов выполняем в пуле потоков,
+            // чтобы не морозить UI-диспетчер синхронными колбэками CancellationToken.
+            ThreadPool.UnsafeQueueUserWorkItem(static state =>
+            {
+                var cts = (CancellationTokenSource)state!;
+                try { cts.Cancel(); } catch (ObjectDisposedException) { }
+                try { cts.Dispose(); } catch (ObjectDisposedException) { }
+            }, oldCts);
+        }
+
         return session;
     }
 

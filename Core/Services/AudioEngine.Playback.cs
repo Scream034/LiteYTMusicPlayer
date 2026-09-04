@@ -129,36 +129,28 @@ public sealed partial class AudioEngine
     /// <summary>
     /// Запускает воспроизведение трека по текущему индексу очереди с опциональной позиции и флагом автозапуска.
     /// </summary>
-    private async Task PlayCurrentIndexAsync(int session, TimeSpan? seekPosition = null, bool startPlaying = true)
+    /// <param name="session">Идентификатор сессии воспроизведения.</param>
+    /// <param name="seekPosition">Начальная позиция воспроизведения при перемотке.</param>
+    /// <param name="startPlaying">Флаг автоматического старта проигрывания.</param>
+    private Task PlayCurrentIndexAsync(int session, TimeSpan? seekPosition = null, bool startPlaying = true)
     {
         TrackInfo? track;
         lock (_queueLock)
         {
-            if (_currentIndex < 0 || _currentIndex >= _queue.Count) return;
+            if (_currentIndex < 0 || _currentIndex >= _queue.Count) return Task.CompletedTask;
             track = _queue[_currentIndex];
         }
 
-        if (track == null || IsSealedFailedTrack(track.Id)) return;
+        if (track == null || IsSealedFailedTrack(track.Id)) return Task.CompletedTask;
+        if (_session.IsStale(session)) return Task.CompletedTask;
 
-        var previousTask = Volatile.Read(ref _activePlayTask);
-        if (previousTask is { IsCompleted: false })
-        {
-            try { await previousTask.ConfigureAwait(false); }
-            catch (OperationCanceledException) { }
-            catch (Exception) { }
-        }
-
-        if (_session.IsStale(session)) return;
-
+        // Не блокируем актор-поток ожиданием предыдущей отменяемой задачи:
+        // отмена старой сессии уже инициирована через CancellationTokenSource в BeginNewSession().
+        // Новая задача запускается мгновенно, а отменённая завершится асинхронно в ThreadPool.
         var playTask = PlayTrackCoreAsync(track, session, GetSessionToken(), seekPosition, startPlaying);
         Volatile.Write(ref _activePlayTask, playTask);
 
-        try
-        {
-            await playTask.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception) { }
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -175,9 +167,15 @@ public sealed partial class AudioEngine
             return;
 
         Log.Debug($"[AudioEngine] [PlayTrackCore] Initiating playback for track: {track.Id} | " +
-                  $"Session: {session} | StartPlaying: {startPlaying}");
+                          $"Session: {session} | StartPlaying: {startPlaying}");
 
-        _player.Stop();
+        // Глушим плеер только при переключении на ДРУГОЙ трек.
+        // При retry/resync того же трека PlayAsync сам атомарно заменит пайплайн без 30-секундной дыры в тишине.
+        if (!string.Equals(CurrentTrack?.Id, track.Id, StringComparison.Ordinal))
+        {
+            _player.Stop();
+        }
+
         if (_session.IsStaleOrCancelled(session, ct) || IsSealedFailedTrack(track.Id))
             return;
 
@@ -227,9 +225,9 @@ public sealed partial class AudioEngine
                 {
                     ct.ThrowIfCancellationRequested();
 
-                    var descriptor = await Task.Run(
-                        () => ResolveStreamAsync(track, ct, seekPosition), ct)
-                        .ConfigureAwait(false);
+                    // Вызываем асинхронный ResolveStreamAsync напрямую без лишней обёртки Task.Run,
+                    // которая порождала каскад дублирующих TaskCanceledException в пуле потоков.
+                    var descriptor = await ResolveStreamAsync(track, ct, seekPosition).ConfigureAwait(false);
 
                     if (descriptor.HasPerceptualLufs)
                     {
@@ -267,6 +265,7 @@ public sealed partial class AudioEngine
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
+                    // Пользователь переключил трек — выходим мгновенно без повторных попыток
                     throw;
                 }
                 catch (Exception ex)
@@ -285,17 +284,9 @@ public sealed partial class AudioEngine
                     await Task.Delay(300, ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException ex)
-                    when (attempt < maxStartupAttempts)
+                    when (!ct.IsCancellationRequested && attempt < maxStartupAttempts)
                 {
-                    Log.Warn($"[AudioEngine] Transient cancellation during track startup " +
-                             $"(attempt {attempt}/{maxStartupAttempts}): {ex.Message}");
-                    _player.Stop();
-                    await Task.Delay(150, ct).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException ex)
-                    when (attempt < maxStartupAttempts)
-                {
-                    Log.Warn($"[AudioEngine] Transient cancellation during track startup " +
+                    Log.Warn($"[AudioEngine] Transient internal timeout during track startup " +
                              $"(attempt {attempt}/{maxStartupAttempts}): {ex.Message}");
                     _player.Stop();
                     await Task.Delay(150, ct).ConfigureAwait(false);

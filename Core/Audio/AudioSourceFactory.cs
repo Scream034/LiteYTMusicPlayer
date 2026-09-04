@@ -127,16 +127,50 @@ public static class AudioSourceFactory
                 null));
         }
 
+        // Вычисляем канонический ключ кэша для данного трека и формата
+        string resolvedCacheKey = format != AudioFormat.Unknown && bitrateKbps > 0
+            ? BuildCacheKey(trackId, format, bitrateKbps)
+            : string.Empty;
+
         // Cache-only or empty URL path
         if (string.IsNullOrEmpty(url))
         {
-            if (format != AudioFormat.Unknown && bitrateKbps > 0)
+            // При явном Partial Cache запрещаем откат на LocalFileSource: запускаем CachingStreamSource
+            if (descriptor.Origin == StreamSource.DiskCachePartial)
             {
-                string exactCacheKey = BuildCacheKey(trackId, format, bitrateKbps);
-                if (_globalCacheManager.IsFullyCached(exactCacheKey))
+                int bootstrapBytes = Math.Min(config.InitialPrebufferBytes, int.MaxValue);
+                var startupEntry = _globalCacheManager.FindBestStartupCache(trackId, bootstrapBytes)
+                                ?? (!string.IsNullOrEmpty(resolvedCacheKey) ? _globalCacheManager.GetCacheInfo(resolvedCacheKey) : null);
+
+                long effectiveLength = contentLength > 0
+                    ? contentLength
+                    : (startupEntry?.TotalSize ?? 0);
+
+                string partialCacheKey = !string.IsNullOrEmpty(resolvedCacheKey)
+                    ? resolvedCacheKey
+                    : (startupEntry?.CacheKey ?? BuildCacheKey(trackId, format, bitrateKbps));
+
+                Log.Info($"[AudioSourceFactory] Source decision: CachingStreamSource, track={trackId}, reason=partial-cache-bootstrap, cacheKey={partialCacheKey}");
+                return Task.FromResult<IAudioSource>(new CachingStreamSource(
+                    partialCacheKey,
+                    trackId,
+                    url: string.Empty,
+                    contentLength: effectiveLength,
+                    format: format != AudioFormat.Unknown ? format : (startupEntry?.Format ?? AudioFormat.WebM),
+                    codec: codec != AudioCodec.Unknown ? codec : (startupEntry?.Codec ?? AudioCodec.Opus),
+                    bitrate: bitrateKbps > 0 ? bitrateKbps : (startupEntry?.Bitrate ?? 128),
+                    cacheManager: _globalCacheManager,
+                    config: config,
+                    urlAcquirer: urlAcquirer,
+                    urlRefresher: urlRefresher));
+            }
+
+            if (!string.IsNullOrEmpty(resolvedCacheKey))
+            {
+                if (_globalCacheManager.IsFullyCached(resolvedCacheKey))
                 {
-                    var exactEntry = _globalCacheManager.GetCacheInfo(exactCacheKey);
-                    string exactPath = _globalCacheManager.GetCachePath(exactCacheKey);
+                    var exactEntry = _globalCacheManager.GetCacheInfo(resolvedCacheKey);
+                    string exactPath = _globalCacheManager.GetCachePath(resolvedCacheKey);
                     if (exactEntry != null && File.Exists(exactPath))
                     {
                         Log.Info($"[AudioSourceFactory] Source decision: LocalFileSource, track={trackId}, reason=full-cache");
@@ -145,7 +179,7 @@ public static class AudioSourceFactory
                             exactEntry.TotalSize,
                             trackId,
                             _globalCacheManager,
-                            exactCacheKey));
+                            resolvedCacheKey));
                     }
                 }
             }
@@ -162,19 +196,19 @@ public static class AudioSourceFactory
                     cached.Value.Entry.CacheKey));
             }
 
-            int bootstrapBytes = Math.Min(config.InitialPrebufferBytes, int.MaxValue);
-            var startupEntry = _globalCacheManager.FindBestStartupCache(trackId, bootstrapBytes);
-            if (startupEntry != null)
+            int defaultBootstrapBytes = Math.Min(config.InitialPrebufferBytes, int.MaxValue);
+            var fallbackStartupEntry = _globalCacheManager.FindBestStartupCache(trackId, defaultBootstrapBytes);
+            if (fallbackStartupEntry != null)
             {
-                Log.Info($"[AudioSourceFactory] Source decision: CachingStreamSource, track={trackId}, reason=partial-cache-bootstrap, cacheKey={startupEntry.CacheKey}, prefix={startupEntry.GetContiguousDownloadedBytesFrom(0)}");
+                Log.Info($"[AudioSourceFactory] Source decision: CachingStreamSource, track={trackId}, reason=partial-cache-bootstrap, cacheKey={fallbackStartupEntry.CacheKey}");
                 return Task.FromResult<IAudioSource>(new CachingStreamSource(
-                    startupEntry.CacheKey,
+                    fallbackStartupEntry.CacheKey,
                     trackId,
                     url: string.Empty,
-                    contentLength: startupEntry.TotalSize,
-                    format: startupEntry.Format,
-                    codec: startupEntry.Codec,
-                    bitrate: startupEntry.Bitrate > 0 ? startupEntry.Bitrate : bitrateKbps,
+                    contentLength: fallbackStartupEntry.TotalSize,
+                    format: fallbackStartupEntry.Format,
+                    codec: fallbackStartupEntry.Codec,
+                    bitrate: fallbackStartupEntry.Bitrate > 0 ? fallbackStartupEntry.Bitrate : bitrateKbps,
                     cacheManager: _globalCacheManager,
                     config: config,
                     urlAcquirer: urlAcquirer,
@@ -205,28 +239,30 @@ public static class AudioSourceFactory
                 contentLength = 100 * 1024 * 1024;
         }
 
-        string cacheKey = BuildCacheKey(trackId, format, bitrateKbps);
+        string finalCacheKey = !string.IsNullOrEmpty(resolvedCacheKey)
+            ? resolvedCacheKey
+            : BuildCacheKey(trackId, format, bitrateKbps);
 
-        if (_globalCacheManager.IsFullyCached(cacheKey))
+        if (descriptor.Origin != StreamSource.DiskCachePartial && _globalCacheManager.IsFullyCached(finalCacheKey))
         {
-            var cachePath = _globalCacheManager.GetCachePath(cacheKey);
+            var cachePath = _globalCacheManager.GetCachePath(finalCacheKey);
             if (File.Exists(cachePath))
             {
-                var exactEntry = _globalCacheManager.GetCacheInfo(cacheKey);
+                var exactEntry = _globalCacheManager.GetCacheInfo(finalCacheKey);
                 Log.Info($"[AudioSourceFactory] Source decision: LocalFileSource, track={trackId}, reason=full-cache");
                 return Task.FromResult<IAudioSource>(new LocalFileSource(
                     cachePath,
                     exactEntry?.TotalSize ?? 0,
                     trackId,
                     _globalCacheManager,
-                    cacheKey));
+                    finalCacheKey));
             }
         }
 
-        Log.Info($"[AudioSourceFactory] Source decision: CachingStreamSource, track={trackId}, reason=live-stream, cacheKey={cacheKey}, hasLiveUrl={descriptor.HasLiveUrl}");
+        Log.Info($"[AudioSourceFactory] Source decision: CachingStreamSource, track={trackId}, reason=live-stream, cacheKey={finalCacheKey}, hasLiveUrl={descriptor.HasLiveUrl}");
 
         return Task.FromResult<IAudioSource>(new CachingStreamSource(
-            cacheKey,
+            finalCacheKey,
             trackId,
             url,
             contentLength,

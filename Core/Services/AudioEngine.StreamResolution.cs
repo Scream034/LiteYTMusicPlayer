@@ -67,7 +67,7 @@ public sealed partial class AudioEngine
             if (AudioSourceFactory.GlobalCache is { } exactCache && exactCache.IsFullyCached(exactCacheKey))
             {
                 var exactEntry = exactCache.GetCacheInfo(exactCacheKey);
-                if (exactEntry != null)
+                if (exactEntry != null && IsCacheSizePlausible(exactEntry, track.Duration))
                 {
                     TrackNormalizationHydrator.HydrateNormalization(track, exactEntry);
                     TryEnrichIntegratedLufsFromLocalSources(track);
@@ -95,7 +95,7 @@ public sealed partial class AudioEngine
             var fullCache = AudioSourceFactory.FindAnyCachedTrack(track.Id)
                          ?? (rawId != track.Id ? AudioSourceFactory.FindAnyCachedTrack(rawId) : null);
 
-            if (fullCache != null)
+            if (fullCache != null && IsCacheSizePlausible(fullCache.Value.Entry, track.Duration))
             {
                 var entry = fullCache.Value.Entry;
                 TrackNormalizationHydrator.HydrateNormalization(track, entry);
@@ -650,6 +650,22 @@ public sealed partial class AudioEngine
             LoudnessSource.YoutubePerceptual);
 
         Log.Debug($"[AudioEngine] Enriched LUFS from SessionCache: {track.Id} → {manifest.IntegratedLufs:F2} LUFS");
+    }
+
+    /// <summary>
+    /// Проверяет, является ли размер закэшированного файла правдоподобным для указанной длительности трека.
+    /// </summary>
+    /// <param name="entry">Запись кэша.</param>
+    /// <param name="duration">Длительность трека из метаданных.</param>
+    /// <returns><c>true</c>, если размер файла соответствует физике кодека.</returns>
+    private static bool IsCacheSizePlausible(AudioCacheEntry entry, TimeSpan duration)
+    {
+        if (duration <= TimeSpan.FromSeconds(5))
+            return entry.TotalSize > 32 * 1024;
+
+        int bitrate = entry.Bitrate > 0 ? entry.Bitrate : 128;
+        long minExpectedBytes = (long)(duration.TotalSeconds * bitrate * 1000.0 / 8.0 * 0.50);
+        return entry.TotalSize >= minExpectedBytes;
     }
 
     #endregion

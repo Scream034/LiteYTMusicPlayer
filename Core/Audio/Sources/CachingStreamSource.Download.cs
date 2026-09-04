@@ -806,14 +806,15 @@ public sealed partial class CachingStreamSource
                     throw;
                 }
                 catch (Exception ex) when (
-                    ct.IsCancellationRequested || _disposed
-                    || ex is IOException
-                    || ex is System.Net.Sockets.SocketException)
+                                    ct.IsCancellationRequested || _disposed || (_lifetimeCts?.IsCancellationRequested == true)
+                                    || ex is IOException
+                                    || ex is System.Net.Sockets.SocketException)
                 {
                     _lastDownloadException = ex;
                     memoryOwner.Dispose();
 
-                    if (ct.IsCancellationRequested || _disposed)
+                    // Если отмена инициирована извне (переключение трека) — мгновенный выход без ретраев
+                    if (ct.IsCancellationRequested || _disposed || (_lifetimeCts?.IsCancellationRequested == true))
                         return RangeDownloadResult.Cancelled;
 
                     Log.Warn($"[CachingSource] Range {plan.Start}-{end} read I/O error: {ex.Message}");

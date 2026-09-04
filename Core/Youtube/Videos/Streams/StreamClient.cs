@@ -178,20 +178,34 @@ public sealed class StreamClient
 
             if (!string.IsNullOrEmpty(nToken))
             {
+                // Для WEB и WEB_REMIX YouTube ВСЕГДА шифрует n-token.
+                // Выполнять сетевой HEAD-запрос ценой 1.5-2 секунды ради получения заведомого HTTP 403 бессмысленно:
+                // расшифровка в QuickJS занимает всего 5 мс и выполняется упреждающе.
                 if (isNTokenDecryptionRequired == null)
                 {
-                    try
-                    {
-                        using var headResponse = await _http.HeadAsync(url, cancellationToken).ConfigureAwait(false);
-                        isNTokenDecryptionRequired = !headResponse.IsSuccessStatusCode;
-                        Log.Debug($"[StreamClient] itag={itag} HEAD: {headResponse.StatusCode}, " +
-                                  $"needsNToken={isNTokenDecryptionRequired}");
-                    }
-                    catch (OperationCanceledException) { throw; }
-                    catch (Exception ex)
+                    bool isKnownEncryptedClient = string.Equals(clientName, "WEB_REMIX", StringComparison.OrdinalIgnoreCase)
+                                               || string.Equals(clientName, "WEB", StringComparison.OrdinalIgnoreCase)
+                                               || string.Equals(clientName, "TVHTML5_SIMPLY_EMBEDDED_PLAYER", StringComparison.OrdinalIgnoreCase);
+
+                    if (isKnownEncryptedClient)
                     {
                         isNTokenDecryptionRequired = true;
-                        Log.Debug($"[StreamClient] HEAD failed: {ex.Message}, will try to decrypt");
+                        Log.Debug($"[StreamClient] itag={itag}: Proactively decrypting n-token for web client '{clientName}' (bypassing 2s HEAD probe)");
+                    }
+                    else
+                    {
+                        try
+                        {
+                            using var headResponse = await _http.HeadAsync(url, cancellationToken).ConfigureAwait(false);
+                            isNTokenDecryptionRequired = !headResponse.IsSuccessStatusCode;
+                            Log.Debug($"[StreamClient] itag={itag} HEAD: {headResponse.StatusCode}, needsNToken={isNTokenDecryptionRequired}");
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception ex)
+                        {
+                            isNTokenDecryptionRequired = true;
+                            Log.Debug($"[StreamClient] HEAD probe failed ({ex.Message}), fallback to proactive decryption");
+                        }
                     }
                 }
 

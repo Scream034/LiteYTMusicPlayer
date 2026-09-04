@@ -89,10 +89,10 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
 
         return failures switch
         {
-            0 => TimeSpan.FromMilliseconds(150),
-            1 => TimeSpan.FromSeconds(1),
-            2 => TimeSpan.FromSeconds(3),
-            _ => TimeSpan.FromSeconds(5)
+            0 => TimeSpan.FromMilliseconds(50),
+            1 => TimeSpan.FromMilliseconds(300),
+            2 => TimeSpan.FromMilliseconds(600),
+            _ => TimeSpan.FromSeconds(1)
         };
     }
 
@@ -216,7 +216,7 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
 
         // Bot detection tracking ПЕРЕД LoginRequired
         // Обеспечивает инкремент _consecutiveFailures для LOGIN_REQUIRED + "bot"
-        TrackBotDetection(playerResponse);
+        TrackBotDetection(playerResponse, clientName);
 
         if (playerResponse.IsLoginRequired)
         {
@@ -341,8 +341,13 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
                error.Contains("confirm", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void TrackBotDetection(PlayerResponse response)
+    private static void TrackBotDetection(PlayerResponse response, string clientName)
     {
+        // ANDROID_VR изолирован собственным 300-секундным кулдауном.
+        // Не раздуваем глобальный троттлинг из-за него, иначе WEB_REMIX будет искусственно тормозить на 1-5 сек.
+        if (string.Equals(clientName, "ANDROID_VR", StringComparison.OrdinalIgnoreCase))
+            return;
+
         if (IsBotDetectionResponse(response))
         {
             lock (_stateLock)
@@ -352,7 +357,7 @@ internal partial class VideoController(HttpClient http, PlayerContextManager pla
 
                 if (_consecutiveFailures == 1)
                 {
-                    Log.Warn("[VideoController] ⚠️ Bot detection triggered — slowing down requests");
+                    Log.Warn("[VideoController] ⚠️ Bot detection triggered on web client — slowing down requests");
                 }
                 else if (_consecutiveFailures >= 3)
                 {

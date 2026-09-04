@@ -702,7 +702,8 @@ public partial class YoutubeProvider : IDisposable
             if (cache != null && cache.IsFullyCached(cacheKey))
             {
                 var entry = cache.GetCacheInfo(cacheKey);
-                if (entry != null)
+                // Sanity check: отсекаем огрызки, размер которых не соответствует длительности
+                if (entry != null && (track.Duration <= TimeSpan.FromSeconds(5) || entry.TotalSize >= (long)(track.Duration.TotalSeconds * entry.Bitrate * 1000.0 / 8.0 * 0.50)))
                 {
                     var d = CreateDescriptorFromCacheEntry(track.Id, entry);
                     Log.Info($"[YouTube] RefreshStreamAsync FULL CACHE (exact) -> {d}");
@@ -714,7 +715,7 @@ public partial class YoutubeProvider : IDisposable
         if (!forceRefresh && !requested.HasFormat)
         {
             var anyCache = AudioSourceFactory.FindAnyCachedTrack(rawVideoId);
-            if (anyCache != null)
+            if (anyCache != null && (track.Duration <= TimeSpan.FromSeconds(5) || anyCache.Value.Entry.TotalSize >= (long)(track.Duration.TotalSeconds * anyCache.Value.Entry.Bitrate * 1000.0 / 8.0 * 0.50)))
             {
                 var d = CreateDescriptorFromCacheEntry(track.Id, anyCache.Value.Entry);
                 Log.Info($"[YouTube] RefreshStreamAsync FULL CACHE (any) -> {d}");
@@ -963,11 +964,18 @@ public partial class YoutubeProvider : IDisposable
     }
 
     private AudioOnlyStreamInfo? SelectBestStream(
-     List<AudioOnlyStreamInfo> streams,
-     AudioFormat? preferredFormat,
-     int preferredBitrate = 0)
+         List<AudioOnlyStreamInfo> streams,
+         AudioFormat? preferredFormat,
+         int preferredBitrate = 0)
     {
         if (streams.Count == 0) return null;
+
+        var blacklist = AudioSourceFactory.CdnBlacklist;
+
+        // Фильтруем заблокированные ТСПУ CDN-хосты, если есть альтернативы
+        var candidateStreams = streams.Where(s => !blacklist.IsBlockedUrl(s.Url)).ToList();
+        if (candidateStreams.Count == 0)
+            candidateStreams = streams; // Fallback на исходные, если заблокированы вообще все
 
         if (preferredFormat is { } requestedFormat && requestedFormat != AudioFormat.Unknown)
         {
@@ -975,21 +983,21 @@ public partial class YoutubeProvider : IDisposable
             double bestDelta = double.MaxValue;
             AudioOnlyStreamInfo? firstInFormat = null;
 
-            for (int i = 0; i < streams.Count; i++)
+            for (int i = 0; i < candidateStreams.Count; i++)
             {
-                var streamFormat = YoutubeIdHelper.MapContainerToFormat(streams[i].Container.Name);
+                var streamFormat = YoutubeIdHelper.MapContainerToFormat(candidateStreams[i].Container.Name);
                 if (streamFormat != requestedFormat)
                     continue;
 
-                firstInFormat ??= streams[i];
+                firstInFormat ??= candidateStreams[i];
 
                 if (preferredBitrate > 0)
                 {
-                    var delta = Math.Abs(streams[i].Bitrate.KiloBitsPerSecond - preferredBitrate);
+                    var delta = Math.Abs(candidateStreams[i].Bitrate.KiloBitsPerSecond - preferredBitrate);
                     if (delta < bestDelta)
                     {
                         bestDelta = delta;
-                        bestMatch = streams[i];
+                        bestMatch = candidateStreams[i];
                     }
                 }
             }
@@ -1002,14 +1010,14 @@ public partial class YoutubeProvider : IDisposable
 
         if (qualityPref == AudioQualityPreference.Standard)
         {
-            for (int i = 0; i < streams.Count; i++)
+            for (int i = 0; i < candidateStreams.Count; i++)
             {
-                if (YoutubeIdHelper.MapContainerToFormat(streams[i].Container.Name) == AudioFormat.Mp4)
-                    return streams[i];
+                if (YoutubeIdHelper.MapContainerToFormat(candidateStreams[i].Container.Name) == AudioFormat.Mp4)
+                    return candidateStreams[i];
             }
         }
 
-        return streams.Count > 0 ? streams[0] : null;
+        return candidateStreams.Count > 0 ? candidateStreams[0] : null;
     }
 
     private static AudioCodec DetermineCodec(AudioOnlyStreamInfo stream, AudioFormat format)

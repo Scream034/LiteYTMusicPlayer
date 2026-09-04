@@ -72,9 +72,14 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
     public AudioCacheEntry? FindBestCacheByTrackId(string trackId) => FindBestCache(trackId);
 
+    /// <summary>
+    /// Гидрирует статус кэширования для переданного списка треков.
+    /// </summary>
+    /// <param name="tracks">Список треков для проверки кэша.</param>
     public void HydrateCacheStatus(IEnumerable<TrackInfo> tracks)
     {
         var trackMap = new Dictionary<string, List<TrackInfo>>(StringComparer.Ordinal);
+        var durationMap = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
 
         foreach (var track in tracks)
         {
@@ -85,6 +90,8 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
             {
                 list = new List<TrackInfo>(1);
                 trackMap[track.Id] = list;
+                if (track.Duration > TimeSpan.Zero)
+                    durationMap[track.Id] = track.Duration;
             }
 
             list.Add(track);
@@ -92,8 +99,8 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
 
         if (trackMap.Count == 0) return;
 
-        // Self-Healing: Проверяем наличие файлов-сирот на диске для переданных треков
-        bool orphansRecovered = RecoverOrphansForTracks(trackMap.Keys);
+        // Self-Healing: Проверяем наличие файлов-сирот с верификацией размера
+        bool orphansRecovered = RecoverOrphansForTracks(trackMap.Keys, durationMap);
 
         foreach (var (trackId, tracksList) in trackMap)
         {
@@ -124,12 +131,18 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
-    /// Сканирует диск на наличие файлов-сирот для переданных trackId и восстанавливает их в индекс.
+    /// Сканирует диск на наличие файлов-сирот для переданных trackId и восстанавливает их в индекс,
+    /// проверяя размер на соответствие битрейту и длительности трека.
     /// </summary>
     /// <param name="trackIds">Список идентификаторов треков.</param>
-    /// <returns><c>true</c>, если была восстановлена хотя бы одна запись.</returns>
-    public bool RecoverOrphansForTracks(IEnumerable<string> trackIds)
+    /// <param name="trackDurations">Опциональный словарь длительностей треков для sanity check.</param>
+    /// <returns><c>true</c>, если была восстановлена хотя бы одна валидная запись.</returns>
+    public bool RecoverOrphansForTracks(
+        IEnumerable<string> trackIds,
+        IReadOnlyDictionary<string, TimeSpan>? trackDurations = null)
     {
+        const long MinimumFragmentThresholdBytes = 128 * 1024; // 128 KB
+        const long FallbackCompleteMinBytes = 350 * 1024;      // 350 KB (~22s audio)
         bool anyRecovered = false;
 
         foreach (var rawTrackId in trackIds)
@@ -140,6 +153,12 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
                 ? rawTrackId
                 : string.Concat("yt_", rawTrackId);
 
+            TimeSpan duration = TimeSpan.Zero;
+            if (trackDurations != null && (!trackDurations.TryGetValue(rawTrackId, out duration) && !trackDurations.TryGetValue(trackId, out duration)))
+            {
+                duration = TimeSpan.Zero;
+            }
+
             foreach (var (format, bitrate, codec) in KnownFormatProfiles)
             {
                 string cacheKey = AudioSourceFactory.BuildCacheKey(trackId, format, bitrate);
@@ -149,45 +168,67 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
                     continue;
 
                 string filePath = GetCachePath(cacheKey);
-
                 if (!File.Exists(filePath))
                     continue;
 
                 try
                 {
                     var fi = new FileInfo(filePath);
-                    // Минимальный порог размера файла (16 KB) для отсечения повреждённых огрызков
-                    if (fi.Length > 16384)
+                    long minExpectedBytes;
+
+                    if (duration > TimeSpan.FromSeconds(5))
                     {
-                        var entry = _entries.GetOrAdd(cacheKey, _ => new AudioCacheEntry
-                        {
-                            CacheKey = cacheKey,
-                            TrackId = trackId,
-                            OriginalUrl = string.Empty,
-                            TotalSize = fi.Length,
-                            Format = format,
-                            Codec = codec,
-                            Bitrate = bitrate,
-                            AlignmentBytes = ChunkSize,
-                            CreatedAt = fi.CreationTimeUtc,
-                            LastAccessedAt = DateTime.UtcNow,
-                            CompletedAt = fi.LastWriteTimeUtc,
-                            IsComplete = true,
-                            ActualFileSize = fi.Length
-                        });
-
-                        entry.TotalSize = fi.Length;
-                        entry.ActualFileSize = fi.Length;
-                        entry.IsComplete = true;
-                        entry.CompletedAt = fi.LastWriteTimeUtc;
-                        entry.LastAccessedAt = DateTime.UtcNow;
-                        entry.MarkFullyDownloaded();
-
-                        AddToTrackIndex(trackId, cacheKey);
-                        anyRecovered = true;
-
-                        Log.Info($"[AudioCache] Orphaned cache file recovered: {cacheKey} ({fi.Length / 1024} KB)");
+                        // 65% от номинала с учетом VBR кодирования
+                        minExpectedBytes = (long)(duration.TotalSeconds * bitrate * 1000.0 / 8.0 * 0.65);
                     }
+                    else
+                    {
+                        minExpectedBytes = FallbackCompleteMinBytes;
+                    }
+
+                    // Если файл меньше порога полноценного трека — это недокачанный фрагмент
+                    if (fi.Length < minExpectedBytes)
+                    {
+                        if (fi.Length < MinimumFragmentThresholdBytes)
+                        {
+                            // Огрызки меньше 128 КБ без метаданных непригодны для воспроизведения
+                            try { fi.Delete(); } catch { }
+                            Log.Warn($"[AudioCache] Corrupt orphan fragment deleted: {cacheKey} ({fi.Length / 1024}KB < {minExpectedBytes / 1024}KB)");
+                        }
+                        continue;
+                    }
+
+                    var entry = _entries.GetOrAdd(cacheKey, _ => new AudioCacheEntry
+                    {
+                        CacheKey = cacheKey,
+                        TrackId = trackId,
+                        OriginalUrl = string.Empty,
+                        TotalSize = fi.Length,
+                        Format = format,
+                        Codec = codec,
+                        Bitrate = bitrate,
+                        DurationMs = (long)duration.TotalMilliseconds,
+                        AlignmentBytes = ChunkSize,
+                        CreatedAt = fi.CreationTimeUtc,
+                        LastAccessedAt = DateTime.UtcNow,
+                        CompletedAt = fi.LastWriteTimeUtc,
+                        IsComplete = true,
+                        ActualFileSize = fi.Length
+                    });
+
+                    entry.TotalSize = fi.Length;
+                    entry.ActualFileSize = fi.Length;
+                    entry.IsComplete = true;
+                    if (duration > TimeSpan.Zero)
+                        entry.DurationMs = (long)duration.TotalMilliseconds;
+                    entry.CompletedAt = fi.LastWriteTimeUtc;
+                    entry.LastAccessedAt = DateTime.UtcNow;
+                    entry.MarkFullyDownloaded();
+
+                    AddToTrackIndex(trackId, cacheKey);
+                    anyRecovered = true;
+
+                    Log.Info($"[AudioCache] Orphaned cache file verified and recovered: {cacheKey} ({fi.Length / 1024} KB)");
                 }
                 catch (Exception ex)
                 {
@@ -459,11 +500,11 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
         entry.OriginalUrl = url;
         entry.LastAccessedAt = DateTime.UtcNow;
 
+        if (totalSize > 0 && (entry.TotalSize <= 0 || (entry.TotalSize < totalSize && !entry.IsComplete)))
+            entry.TotalSize = totalSize;
+
         if (bitrate > 0)
             entry.Bitrate = bitrate;
-
-        if (durationMs > 0)
-            entry.DurationMs = durationMs;
 
         if (entry.DownloadedBytes == 0 && alignmentBytes > 0)
             entry.AlignmentBytes = alignmentBytes;
@@ -998,8 +1039,10 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
-    /// Проверяет целостность complete-кэша.
+    /// Проверяет физическую целостность и правдоподобность complete-кэша.
     /// </summary>
+    /// <param name="entry">Запись кэша для проверки.</param>
+    /// <returns><c>true</c> если файл существует и его размер правдоподобен.</returns>
     private bool EnsureCacheFileIntegrity(AudioCacheEntry entry)
     {
         if (!entry.IsComplete) return false;
@@ -1012,13 +1055,11 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
             {
                 if (actualLength == 0)
                 {
-                    // Файл не существует
                     InvalidateCompleteEntry(entry);
                     return false;
                 }
 
-                // Файл усечён
-                Log.Warn($"[AudioCache] ⚠ Truncated cache file: {entry.CacheKey} " +
+                Log.Warn($"[AudioCache] Truncated cache file: {entry.CacheKey} " +
                          $"(disk={actualLength / 1024}KB, expected={entry.TotalSize / 1024}KB)");
                 InvalidateCompleteEntry(entry);
 
@@ -1026,6 +1067,23 @@ public sealed class AudioCacheManager : IAsyncDisposable, IDisposable
                 catch (Exception ex) { Log.Warn($"[AudioCache] Failed to delete truncated cache file: {ex.Message}"); }
 
                 return false;
+            }
+
+            // Sanity check: размер файла не может быть абсурдно мал относительно длительности
+            if (entry.DurationMs > 10_000 && entry.Bitrate > 0)
+            {
+                long minPlausibleBytes = (long)(entry.DurationMs / 1000.0 * entry.Bitrate * 1000.0 / 8.0 * 0.50);
+                if (actualLength < minPlausibleBytes)
+                {
+                    Log.Warn($"[AudioCache] Implausibly small cache file rejected: {entry.CacheKey} " +
+                             $"(disk={actualLength / 1024}KB < minPlausible={minPlausibleBytes / 1024}KB for {entry.DurationMs}ms)");
+                    InvalidateCompleteEntry(entry);
+
+                    try { File.Delete(filePath); }
+                    catch (Exception ex) { Log.Warn($"[AudioCache] Failed to delete corrupt cache file: {ex.Message}"); }
+
+                    return false;
+                }
             }
 
             // Файл физически валиден — self-heal range-state при необходимости
