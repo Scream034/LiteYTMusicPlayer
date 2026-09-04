@@ -21,6 +21,7 @@ public abstract partial class PaginatedViewModel<TSource, TViewModel> : ViewMode
     private readonly SourceList<TSource> _sourceList = new();
     private readonly ReadOnlyObservableCollection<TViewModel> _items;
     private readonly CompositeDisposable _dynamicDataSubscriptions = [];
+    private readonly HashSet<string> _loadedIds = new(StringComparer.Ordinal);
 
     private int _consecutiveEmptyLoads;
     private const int MaxConsecutiveEmptyLoads = 5;
@@ -100,26 +101,9 @@ public abstract partial class PaginatedViewModel<TSource, TViewModel> : ViewMode
             x => x.IsLoading,
             x => x.IsFetchingFromNetwork,
             x => x.HasMoreItems,
-            (more, init, net, hasMore) => !more && !init && !net && hasMore);
+            static (more, init, net, hasMore) => !more && !init && !net && hasMore);
 
-        LoadMoreCommand = CreateCommand(ReactiveCommand.CreateFromTask(async _ => await LoadNextBatchAsync(), canLoadMore));
-
-        _sourceList.Connect()
-            .Filter(filterPredicate)
-            .Count()
-            .Throttle(TimeSpan.FromMilliseconds(100))
-            .ObserveOn(RxSchedulers.MainThreadScheduler)
-            .Subscribe(visibleCount =>
-            {
-                if (visibleCount < PrefetchThreshold && HasMoreItems && !IsLoading && !IsLoadingMore && !IsFetchingFromNetwork)
-                {
-                    if (_consecutiveEmptyLoads < MaxConsecutiveEmptyLoads)
-                    {
-                        _ = LoadNextBatchAsync();
-                    }
-                }
-            })
-            .DisposeWith(_dynamicDataSubscriptions);
+        LoadMoreCommand = CreateCommand(ReactiveCommand.CreateFromTask(LoadNextBatchAsync, canLoadMore));
 
         this.WhenAnyValue(x => x.FilterQuery)
             .Subscribe(_ => _consecutiveEmptyLoads = 0)
@@ -203,7 +187,15 @@ public abstract partial class PaginatedViewModel<TSource, TViewModel> : ViewMode
         _canFetchMore = canFetchMore;
         _consecutiveEmptyLoads = 0;
 
-        var itemsList = items?.ToList() ?? [];
+        var itemsList = items as List<TSource> ?? items?.ToList() ?? [];
+
+        _loadedIds.Clear();
+        for (int i = 0; i < itemsList.Count; i++)
+        {
+            var id = GetItemId(itemsList[i]);
+            if (!string.IsNullOrEmpty(id))
+                _loadedIds.Add(id);
+        }
 
         _sourceList.Edit(innerList =>
         {
@@ -213,11 +205,6 @@ public abstract partial class PaginatedViewModel<TSource, TViewModel> : ViewMode
 
         TotalCount = _sourceList.Count;
         UpdateState();
-
-        if (TotalCount == 0 && canFetchMore)
-        {
-            await LoadNextBatchAsync();
-        }
     }
 
     /// <summary>
@@ -226,6 +213,7 @@ public abstract partial class PaginatedViewModel<TSource, TViewModel> : ViewMode
     protected virtual void ClearItems()
     {
         _sourceList.Clear();
+        _loadedIds.Clear();
         TotalCount = 0;
         _canFetchMore = false;
         UpdateState();
@@ -267,7 +255,7 @@ public abstract partial class PaginatedViewModel<TSource, TViewModel> : ViewMode
         IsLoadingMore = true;
         IsFetchingFromNetwork = true;
 
-        int visibleBefore = _items.Count;
+        int countBefore = TotalCount;
 
         try
         {
@@ -276,14 +264,15 @@ public abstract partial class PaginatedViewModel<TSource, TViewModel> : ViewMode
 
             if (token.IsCancellationRequested || _isDisposed) return;
 
-            if (newItems != null && newItems.Count > 0)
+            if (newItems is { Count: > 0 })
             {
                 _sourceList.Edit(list =>
                 {
-                    var existingIds = list.Select(GetItemId).ToHashSet();
-                    foreach (var item in newItems)
+                    for (int i = 0; i < newItems.Count; i++)
                     {
-                        if (!existingIds.Contains(GetItemId(item)))
+                        var item = newItems[i];
+                        var id = GetItemId(item);
+                        if (!string.IsNullOrEmpty(id) && _loadedIds.Add(id))
                         {
                             list.Add(item);
                             TotalCount++;
@@ -291,18 +280,23 @@ public abstract partial class PaginatedViewModel<TSource, TViewModel> : ViewMode
                     }
                 });
 
-                int visibleAfter = _items.Count;
-                if (visibleAfter == visibleBefore) _consecutiveEmptyLoads++;
-                else _consecutiveEmptyLoads = 0;
+                if (TotalCount == countBefore)
+                    _consecutiveEmptyLoads++;
+                else
+                    _consecutiveEmptyLoads = 0;
+
+                if (_consecutiveEmptyLoads >= MaxConsecutiveEmptyLoads)
+                    _canFetchMore = false;
             }
             else
             {
                 _canFetchMore = false;
             }
         }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            Log.Error($"[Paginated] Load Error: {ex.Message}");
+            Log.Error($"[Paginated] Batch load failure: {ex.Message}");
             _canFetchMore = false;
         }
         finally

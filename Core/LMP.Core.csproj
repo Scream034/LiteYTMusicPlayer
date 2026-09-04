@@ -15,13 +15,28 @@
   </PropertyGroup>
 
   <PropertyGroup Label="Package Versions">
-    <EfCoreVersion>10.0.2</EfCoreVersion>
-    <MsExtVersion>10.0.2</MsExtVersion>
-    <ReactiveUISourceGenVersion>2.6.30</ReactiveUISourceGenVersion>
+    <!-- Обновлено с 10.0.2 до 10.0.11 -->
+    <EfCoreVersion>10.0.11</EfCoreVersion>
+    <MsExtVersion>10.0.11</MsExtVersion>
+
+    <!-- Обновлено с 2.6.30 до 3.2.0 -->
+    <ReactiveUISourceGenVersion>3.2.0</ReactiveUISourceGenVersion>
     <CommunityToolkitMvvmVersion>8.4.2</CommunityToolkitMvvmVersion>
-    <AvaloniaVersion>12.0.4</AvaloniaVersion>
+
+    <!--
+      Было 12.0.4 — критичное расхождение с главным проектом. Исправлено на 12.1.1.
+    -->
+    <AvaloniaVersion>12.1.1</AvaloniaVersion>
+
     <AsyncImageLoaderVersion>3.8.0</AsyncImageLoaderVersion>
-    <SkiaSharpVersion>3.119.4</SkiaSharpVersion>
+
+    <!--
+      SkiaSharp 4.151.1 — стабильный major (было 3.119.4).
+      SkiaSharp 4.0: текущий Skia engine, variable fonts, color palettes, animated WebP.
+      До 24% ускорения на GPU-backend согласно релизным заметкам.
+      ВНИМАНИЕ: мажорное обновление — обязательно протестировать рендеринг обложек/DominantColorService.
+    -->
+    <SkiaSharpVersion>4.151.1</SkiaSharpVersion>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -46,19 +61,27 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <!--
-      Security override: EF Core 10.0.2 транзитивно тянет SQLitePCLRaw.bundle_e_sqlite3 2.1.11,
-      которая содержит уязвимую SQLitePCLRaw.lib.e_sqlite3 2.1.11 (GHSA-2m69-gcr7-jv3q, High).
-      Явный пин на 3.0.3 вытесняет 2.1.11: NuGet берёт максимальную версию.
+      Security override: EF Core 10.0.11 транзитивно тянет SQLitePCLRaw.bundle_e_sqlite3,
+      которая исторически содержала уязвимую SQLitePCLRaw.lib.e_sqlite3 2.1.11 (GHSA-2m69-gcr7-jv3q,
+    High).
+      Явный пин на 3.0.3 вытесняет уязвимую версию: NuGet берёт максимальную.
       SQLitePCLRaw 3.x использует SourceGear.sqlite3 вместо уязвимой lib.e_sqlite3.
     -->
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
   </ItemGroup>
 
   <ItemGroup Label="MVVM">
+    <!--
+      ReactiveUI 23.2.28 — осознанно оставлено на этой линейке.
+      Вышел новый major ReactiveUI 24.x с изменённой архитектурой (разделение на
+      ReactiveUI / ReactiveUI.Reactive: primitives без System.Reactive vs полный API).
+      Ветка 23.x официально остаётся поддерживаемой. Миграция на 24.x — отдельная задача,
+      требует ревизии всех WhenAnyValue / ReactiveCommand цепочек.
+    -->
     <PackageReference Include="ReactiveUI" Version="23.2.28" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="$(CommunityToolkitMvvmVersion)" />
     <!--
-      ReactiveUI.SourceGenerators 2.6.30 — compile-time замена ReactiveUI.Fody.
+      ReactiveUI.SourceGenerators 3.2.0 — compile-time замена ReactiveUI.Fody.
       PrivateAssets="all": генератор не попадает в transitive-зависимости потребителей.
     -->
     <PackageReference Include="ReactiveUI.SourceGenerators" Version="$(ReactiveUISourceGenVersion)">
@@ -72,6 +95,12 @@
   </ItemGroup>
 
   <ItemGroup Label="Audio">
+    <!--
+      NAudio 2.3.0 — последняя версия стабильной линейки 2.x.
+      Вышла новая мажорная ветка 3.0.1 (breaking changes: AudioFileReader теперь бросает
+      NotSupportedException вместо InvalidOperationException). Осознанно не мигрируем —
+      риск для кастомного PCM-пайплайна не оправдан на данном этапе.
+    -->
     <PackageReference Include="NAudio" Version="2.3.0" />
     <PackageReference Include="Concentus" Version="2.2.2" />
   </ItemGroup>
@@ -81,13 +110,15 @@
   </ItemGroup>
 
   <ItemGroup Label="Diagnostics">
+    <!-- Wildcard: подтягивает последний патч 0.2.x автоматически -->
     <PackageReference Include="Microsoft.Diagnostics.NETCore.Client" Version="0.2.*" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- Синхронизировано до $(EfCoreVersion) для работы с базами SQLite браузеров -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="$(EfCoreVersion)" />
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+    <!-- Обновлено с 10.0.0 до 10.0.11 (синхронно с EfCoreVersion/MsExtVersion) -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
   </ItemGroup>
 
   <ItemGroup>

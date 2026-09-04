@@ -72,12 +72,17 @@ internal class SearchController(HttpClient http)
         {
             writer.WriteStartObject();
 
-            writer.WriteString(Utf8Query, searchQuery);
-
+            // По спецификации InnerTube: при наличии continuation токена поля query и params запрещены
             if (continuationToken != null)
+            {
                 writer.WriteString(Utf8Continuation, continuationToken);
-            else if (searchParams != null)
-                writer.WriteString(Utf8Params, searchParams);
+            }
+            else
+            {
+                writer.WriteString(Utf8Query, searchQuery);
+                if (searchParams != null)
+                    writer.WriteString(Utf8Params, searchParams);
+            }
 
             // Inline context — без промежуточного JsonDocument
             writer.WritePropertyName(Utf8Context);
@@ -113,7 +118,7 @@ internal class SearchController(HttpClient http)
             writer.WriteEndObject(); // root
         }
 
-        var content = new ByteArrayContent(bufferWriter.WrittenSpan.ToArray());
+        var content = new ReadOnlyMemoryContent(bufferWriter.WrittenMemory);
         content.Headers.ContentType = JsonContentType;
         request.Content = content;
 

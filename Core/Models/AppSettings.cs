@@ -352,6 +352,12 @@ public sealed class AppSettings
     public int SearchCacheTtlMinutes { get; set; } = 120;
 
     /// <summary>
+    /// Максимальное количество отображаемых подсказок в строке поиска и ленте чипов (3–15).
+    /// По умолчанию: 8.
+    /// </summary>
+    public int MaxSuggestionsCount { get; set; } = 8;
+
+    /// <summary>
     /// Оптимизировать UI при потере фокуса окна.
     /// 
     /// <para><b>true:</b> При сворачивании или потере фокуса приостанавливаются

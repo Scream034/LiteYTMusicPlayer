@@ -331,7 +331,6 @@ public partial class TrackListControl : UserControl
         else if (change.Property == ItemsProperty)
         {
             UpdateItemsContext();
-            Dispatcher.UIThread.Post(CheckInitialLoad, DispatcherPriority.Background);
         }
         else if (change.Property == IsPlaylistContextProperty ||
                  change.Property == IsQueueContextProperty)
@@ -371,17 +370,6 @@ public partial class TrackListControl : UserControl
         bool isNearBottom = distanceToBottom <= NearBottomThreshold
                             || _scrollViewer.Extent.Height <= _scrollViewer.Viewport.Height;
         IsFooterVisible = ReachedEnd && isNearBottom;
-    }
-
-    private void CheckInitialLoad()
-    {
-        if (_scrollViewer == null || LoadMoreCommand == null) return;
-
-        if (_scrollViewer.Extent.Height <= _scrollViewer.Viewport.Height &&
-            LoadMoreCommand.CanExecute(null))
-        {
-            LoadMoreCommand.Execute(null);
-        }
     }
 
     #endregion

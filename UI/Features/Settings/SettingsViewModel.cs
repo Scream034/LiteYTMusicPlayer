@@ -359,6 +359,11 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
 
     [Reactive] public partial bool MinimizeToTray { get; set; }
 
+    /// <summary>
+    /// Максимальное количество отображаемых подсказок в строке поиска и ленте чипов.
+    /// </summary>
+    [Reactive] public partial int MaxSuggestionsCount { get; set; }
+
     /// <summary>Флаг однократной инициализации подписок.</summary>
     private bool _subscriptionsSetup;
 
@@ -1177,6 +1182,14 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
                 _ = _searchCache.CleanupExpiredAsync();
             })
             .DisposeWith(Disposables);
+
+        this.WhenAnyValue(x => x.MaxSuggestionsCount)
+            .Skip(1)
+            .Where(_ => !_isLoadingSettings)
+            .Throttle(TimeSpan.FromMilliseconds(400))
+            .ObserveOn(RxSchedulers.MainThreadScheduler)
+            .Subscribe(v => _library.UpdateSettings(s => s.MaxSuggestionsCount = v))
+            .DisposeWith(Disposables);
     }
 
     /// <summary>
@@ -1200,8 +1213,10 @@ public sealed partial class SettingsViewModel : ViewModelBase, IDisposable, ISmo
             MaxVolumeLimit = s.MaxVolumeLimit;
             TargetGainDb = s.TargetGainDb;
             RememberTrackFormat = s.RememberTrackFormat;
+
             EnableSearchCache = s.EnableSearchCache;
             SearchCacheTtlMinutes = s.SearchCacheTtlMinutes;
+            MaxSuggestionsCount = s.MaxSuggestionsCount > 0 ? s.MaxSuggestionsCount : 8;
             SelectedLanguage = Languages.FirstOrDefault(x => x.Code == s.LanguageCode) ?? Languages[0];
 
             var mem = s.Memory;

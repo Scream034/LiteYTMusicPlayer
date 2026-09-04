@@ -2,37 +2,34 @@
 
   <!--      ВЕРСИИ ПАКЕТОВ        -->
   <PropertyGroup Label="Package Versions">
-    <!--
-      Avalonia 12.1.1 — стабильный релиз (29.07.2026).
-      Новое: TableView, Scrollbar Context Menu, кастомный парсинг дат в CalendarDatePicker,
-      прозрачный чекерборд в ColorView. Первый релиз с SBOM (EU Cyber Resilience Act).
-      Фиксы: brush при смене выделения, RequestedThemeVariant default, text fallback itemization.
-      MicroCom.Runtime поднят до 0.11.6.
-    -->
     <AvaloniaVersion>12.1.1</AvaloniaVersion>
 
     <!--
-      ReactiveUI.Avalonia 12.0.3 — актуальный релиз для Avalonia 12.
-      Пакет Avalonia.ReactiveUI помечен как legacy и более не поддерживается.
+      ReactiveUI.Avalonia 12.0.3 — согласована с веткой ReactiveUI 23.2.28.
+      Внимание: линейка 12.1.x перешла на ReactiveUI 24.x (вырезаны System.Reactive и DynamicData).
     -->
     <ReactiveUIAvaloniaVersion>12.0.3</ReactiveUIAvaloniaVersion>
 
     <!-- Dev-инструменты -->
     <!--
-      HotAvalonia 3.1.4 (18.07.2026).
+      HotAvalonia 3.1.4 (18.07.2026) — версия актуальна, изменений не требуется.
       HotAvalonia.Fody внутри метапакета остался на 3.1.0 — это штатная ситуация.
     -->
     <HotAvaloniaVersion>3.1.4</HotAvaloniaVersion>
 
-    <!-- Entity Framework Core -->
-    <EfCoreVersion>10.0.2</EfCoreVersion>
+    <!-- Entity Framework Core: обновлено с 10.0.2 до 10.0.11 (патчи безопасности/багфиксы) -->
+    <EfCoreVersion>10.0.11</EfCoreVersion>
 
     <!-- MVVM -->
-    <ReactiveUISourceGenVersion>2.6.30</ReactiveUISourceGenVersion>
+    <!--
+      ReactiveUI.SourceGenerators 3.2.0 (было 2.6.30) — compile-time замена ReactiveUI.Fody.
+      Проверено на совместимость с ReactiveUI 23.2.28 (LMP.Core).
+    -->
+    <ReactiveUISourceGenVersion>3.2.0</ReactiveUISourceGenVersion>
     <CommunityToolkitMvvmVersion>8.4.2</CommunityToolkitMvvmVersion>
 
-    <!-- Microsoft Extensions (совпадает с TFM) -->
-    <MsExtVersion>10.0.2</MsExtVersion>
+    <!-- Microsoft Extensions (совпадает с TFM): обновлено с 10.0.2 до 10.0.11 -->
+    <MsExtVersion>10.0.11</MsExtVersion>
 
     <!-- AsyncImageLoader: 3.8.0 — последняя актуальная версия, Avalonia 12 support -->
     <AsyncImageLoaderVersion>3.8.0</AsyncImageLoaderVersion>
@@ -187,7 +184,8 @@
     <PackageReference Include="Avalonia.Fonts.Inter" Version="$(AvaloniaVersion)" />
     <PackageReference Include="Concentus.Native" Version="1.5.2" />
     <PackageReference Include="ReactiveUI.Avalonia" Version="$(ReactiveUIAvaloniaVersion)" />
-    <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.1"
+    <!-- Обновлено с 2.2.1 до 2.2.3 -->
+    <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.3"
       Condition="'$(Configuration)' == 'Debug'" />
   </ItemGroup>
 
@@ -198,24 +196,29 @@
   -->
   <ItemGroup Label="Hot Reload" Condition="'$(Configuration)' == 'Debug'">
     <PackageReference Include="HotAvalonia" Version="$(HotAvaloniaVersion)" PrivateAssets="All" />
-    <PackageReference Include="Avalonia.Markup.Xaml.Loader" Version="$(AvaloniaVersion)" PrivateAssets="All" />
+    <PackageReference Include="Avalonia.Markup.Xaml.Loader" Version="$(AvaloniaVersion)"
+      PrivateAssets="All" />
   </ItemGroup>
 
   <ItemGroup Label="Avalonia Community">
     <!--
       Avalonia.Controls.ItemsRepeater официально retired начиная с Avalonia 12.
-      Версии 12.1.x не существует; пакет заморожен на 12.0.0.
+      Версии 12.1.x не существует; пакет заморожен на 12.0.0 (подтверждено на NuGet).
       Constraint "Avalonia >= 12.0.0" покрывает 12.1.x — совместимость сохранена.
       Удаление невозможно: ItemsRepeater активно используется в TrackListControl и PlaylistCoverPicker.
     -->
     <PackageReference Include="Avalonia.Controls.ItemsRepeater" Version="12.0.0" />
+    <!--
+      Xaml.Behaviors.Avalonia — актуальное имя пакета (старый Avalonia.Xaml.Behaviors deprecated).
+      Версия 12.0.0 согласована с той же линейкой, что ItemsRepeater.
+    -->
     <PackageReference Include="Xaml.Behaviors.Avalonia" Version="12.0.0" />
   </ItemGroup>
 
   <ItemGroup Label="MVVM">
     <PackageReference Include="CommunityToolkit.Mvvm" Version="$(CommunityToolkitMvvmVersion)" />
     <!--
-      ReactiveUI.SourceGenerators 2.6.30 — compile-time замена ReactiveUI.Fody.
+      ReactiveUI.SourceGenerators 3.2.0 — compile-time замена ReactiveUI.Fody.
       PrivateAssets="all": генератор не попадает в transitive-зависимости потребителей.
     -->
     <PackageReference Include="ReactiveUI.SourceGenerators" Version="$(ReactiveUISourceGenVersion)">
@@ -229,7 +232,8 @@
   </ItemGroup>
 
   <ItemGroup Label="Linux Interop">
-    <PackageReference Include="Tmds.DBus.Protocol" Version="0.94.1" />
+    <!-- Обновлено с 0.94.1 до 0.95.0 -->
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.95.0" />
   </ItemGroup>
 
   <ItemGroup>

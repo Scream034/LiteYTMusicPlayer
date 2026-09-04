@@ -23,13 +23,16 @@ internal partial class SearchResponse
     }.ToFrozenSet(StringComparer.Ordinal);
 
     private static readonly FrozenSet<string> ContainerNames = new[]
-    {
+        {
         "contents", "items", "primaryContents", "secondaryContents",
         "twoColumnSearchResultsRenderer", "sectionListRenderer",
         "itemSectionRenderer", "musicShelfRenderer", "richGridRenderer",
         "shelfRenderer", "tabbedSearchResultsRenderer", "tabRenderer",
         "tabs", "content", "continuations", "onResponseReceivedCommands",
-        "appendContinuationItemsAction", "continuationItems"
+        "onResponseReceivedActions", "appendContinuationItemsAction",
+        "continuationItems", "continuationContents", "musicShelfContinuation",
+        "musicPlaylistShelfContinuation", "sectionListContinuation",
+        "itemSectionContinuation"
     }.ToFrozenSet(StringComparer.Ordinal);
 
     public IReadOnlyList<VideoData> Videos { get; }

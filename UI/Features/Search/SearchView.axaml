@@ -1,171 +1,341 @@
 <UserControl xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:vm="using:LMP.UI.Features.Search"
-    xmlns:i="using:Avalonia.Xaml.Interactivity"
-    xmlns:b="using:LMP.UI.Behaviors"
     xmlns:controls="using:LMP.UI.Controls"
+    xmlns:b="using:LMP.UI.Behaviors"
+    xmlns:i="using:Avalonia.Xaml.Interactivity"
     x:Class="LMP.UI.Features.Search.SearchView"
-    x:DataType="vm:SearchViewModel"
-    x:Name="SearchRoot">
+    x:DataType="vm:SearchViewModel">
 
-    <Grid RowDefinitions="Auto, *">
+    <UserControl.Styles>
+        <!-- Полоса шапки во всю ширину окна -->
+        <Style Selector="Border.header-strip">
+            <Setter Property="BorderBrush" Value="{DynamicResource BgHighlightBrush}" />
+            <Setter Property="BorderThickness" Value="0,0,0,1" />
+            <Setter Property="Background" Value="{DynamicResource BgPrimaryBrush}" />
+            <Setter Property="Padding" Value="0" />
+        </Style>
 
-        <!-- HEADER -->
-        <StackPanel Grid.Row="0" Margin="24,20,24,8" Spacing="12">
+        <!-- Кнопки действий и источников: без рамок, чистая анимация цвета иконки -->
+        <Style Selector="Button.header-icon-btn">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="6" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Width" Value="34" />
+            <Setter Property="Height" Value="34" />
+        </Style>
+        <Style Selector="Button.header-icon-btn /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="Button.header-icon-btn:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="Button.header-icon-btn:pressed /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
 
-            <Grid ColumnDefinitions="*, Auto">
-                <TextBox Classes="search-box"
-                    PlaceholderText="{Binding L[Search_Placeholder]}"
-                    Text="{Binding SearchQuery}"
-                    CornerRadius="20" Padding="15,10">
-                    <TextBox.KeyBindings>
-                        <KeyBinding Gesture="Enter" Command="{Binding SearchCommand}" />
-                    </TextBox.KeyBindings>
-                    <TextBox.InnerLeftContent>
-                        <!-- Icon.Search визуально идентичен Magnify из MDI -->
-                        <PathIcon Data="{StaticResource Icon.Search}"
-                            Width="18" Height="18"
-                            Foreground="{DynamicResource TextMutedBrush}"
-                            Margin="8,0,0,0" />
-                    </TextBox.InnerLeftContent>
-                    <TextBox.InnerRightContent>
-                        <Button Command="{Binding SearchCommand}" Classes="icon-btn"
-                            Margin="0,0,4,0" Height="30" Width="30"
-                            ToolTip.Tip="{Binding L[Search_Execute]}">
-                            <PathIcon Data="{StaticResource Icon.ArrowRight}" Width="18" Height="18" />
-                        </Button>
-                    </TextBox.InnerRightContent>
-                </TextBox>
+        <Style Selector="Button.header-icon-btn PathIcon">
+            <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+            <Setter Property="Width" Value="18" />
+            <Setter Property="Height" Value="18" />
+            <Setter Property="Transitions">
+                <Transitions>
+                    <BrushTransition Property="Foreground" Duration="0:0:0.15" />
+                </Transitions>
+            </Setter>
+        </Style>
+        <Style Selector="Button.header-icon-btn:pointerover PathIcon">
+            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+        </Style>
+        <Style Selector="Button.header-icon-btn.active PathIcon">
+            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+        </Style>
 
-                <!-- Source selector buttons -->
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" Margin="12,0,0,0">
-                    <Button Classes="icon-btn"
-                        Classes.active="{Binding Source,
-                            Converter={StaticResource EnumToBool},
-                            ConverterParameter=YouTubeMusic}"
-                        Command="{Binding SetSourceCommand}"
-                        CommandParameter="YouTubeMusic"
-                        ToolTip.Tip="YouTube Music" Width="36" Height="36">
-                        <PathIcon Data="{StaticResource Icon.MusicCircle}" Width="18" Height="18" />
+        <!-- Крупное поле ввода на всю высоту шапки (18px) -->
+        <Style Selector="TextBox.flat-search-box">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="2,0" />
+            <Setter Property="FontSize" Value="18" />
+            <Setter Property="FontWeight" Value="Normal" />
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+            <Setter Property="CaretBrush" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="SelectionBrush" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style Selector="TextBox.flat-search-box /template/ Border#PART_BorderElement">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="TextBox.flat-search-box:pointerover /template/ Border#PART_BorderElement">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="TextBox.flat-search-box:focus /template/ Border#PART_BorderElement">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+
+        <!-- Минималистичные интерактивные чипы с ограничением максимальной ширины -->
+        <Style Selector="Border.ribbon-chip">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BgHighlightBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="14" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="MaxWidth" Value="240" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Transitions">
+                <Transitions>
+                    <BrushTransition Property="BorderBrush" Duration="0:0:0.15" />
+                    <BrushTransition Property="Background" Duration="0:0:0.15" />
+                </Transitions>
+            </Setter>
+        </Style>
+        <Style Selector="Border.ribbon-chip:pointerover">
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="Background" Value="{DynamicResource BgElevatedTransparentBrush}" />
+        </Style>
+    </UserControl.Styles>
+
+    <Grid RowDefinitions="Auto, 2, 38, *">
+
+        <!-- ROW 0: FLAT HEADER STRIP -->
+        <Border Grid.Row="0" Classes="header-strip">
+            <Grid ColumnDefinitions="Auto, *, Auto" Height="46">
+
+                <!-- 1. LEFT: МОНОЛИТНЫЙ СЧЕТЧИК ВО ВСЮ ВЫСОТУ С ОДНОЙ ПРАВОЙ ЛИНИЕЙ -->
+                <Border Grid.Column="0"
+                    Background="Transparent"
+                    BorderBrush="{DynamicResource BgHighlightBrush}"
+                    BorderThickness="0,0,1,0"
+                    MinWidth="48"
+                    Padding="12,0"
+                    VerticalAlignment="Stretch"
+                    ToolTip.Tip="{Binding BadgeTooltip}">
+                    <TextBlock Text="{Binding BadgeCount}"
+                        FontSize="13"
+                        FontWeight="Bold"
+                        TextAlignment="Center"
+                        VerticalAlignment="Center"
+                        Foreground="{DynamicResource AccentBrush}" />
+                </Border>
+
+                <!-- 2. CENTER: КРУПНЫЙ ПЛОСКИЙ ИНПУТ С НЕЗАВИСИМЫМ GHOST TEXT СЛОЕМ -->
+                <Grid Grid.Column="1" Margin="12,0" Height="44" VerticalAlignment="Center">
+                    <TextBlock
+                        IsVisible="{Binding HasGhostText}"
+                        FontSize="18"
+                        FontWeight="Normal"
+                        Padding="2,0"
+                        VerticalAlignment="Center"
+                        Opacity="0.45"
+                        IsHitTestVisible="False">
+                        <Run Text="{Binding SearchQuery}" Foreground="Transparent" />
+                        <Run Text="{Binding GhostTextSuffix}"
+                            Foreground="{DynamicResource TextMutedBrush}" />
+                    </TextBlock>
+
+                    <!-- Клавиши Tab и Right обрабатываются в code-behind на фазе туннелирования для
+                    защиты навигации каретки -->
+                    <TextBox Name="SearchBox"
+                        Classes="flat-search-box"
+                        Text="{Binding SearchQuery}"
+                        PlaceholderText="{Binding L[Search_Placeholder]}"
+                        Height="44">
+                        <TextBox.KeyBindings>
+                            <KeyBinding Gesture="Enter" Command="{Binding SearchCommand}" />
+                            <KeyBinding Gesture="Escape" Command="{Binding ClearQueryCommand}" />
+                        </TextBox.KeyBindings>
+                    </TextBox>
+                </Grid>
+
+                <!-- 3. RIGHT: ДЕЙСТВИЯ, РАЗДЕЛИТЕЛЬ ВО ВСЮ ВЫСОТУ И ИСТОЧНИКИ -->
+                <StackPanel Grid.Column="2"
+                    Orientation="Horizontal"
+                    VerticalAlignment="Stretch">
+
+                    <!-- Кнопка очистки текста [X] -->
+                    <Button Classes="header-icon-btn"
+                        Command="{Binding ClearQueryCommand}"
+                        IsVisible="{Binding SearchQuery, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                        ToolTip.Tip="{Binding L[Search_ClearQuery], FallbackValue='Очистить запрос'}"
+                        Margin="0,0,2,0"
+                        VerticalAlignment="Center">
+                        <PathIcon Data="{StaticResource Icon.Close}" Width="14" Height="14" />
                     </Button>
-                    <Button Classes="icon-btn"
-                        Classes.active="{Binding Source,
-                            Converter={StaticResource EnumToBool},
-                            ConverterParameter=YouTube}"
-                        Command="{Binding SetSourceCommand}"
-                        CommandParameter="YouTube"
-                        ToolTip.Tip="YouTube" Width="36" Height="36">
-                        <PathIcon Data="{StaticResource Icon.Youtube}" Width="18" Height="18" />
+
+                    <!-- Кнопка очистки истории (метла) -->
+                    <Button Classes="header-icon-btn"
+                        Command="{Binding ClearHistoryCommand}"
+                        IsVisible="{Binding HasRecentSearches}"
+                        ToolTip.Tip="{Binding L[Search_ClearHistory], FallbackValue='Очистить историю поиска'}"
+                        Margin="0,0,2,0"
+                        VerticalAlignment="Center">
+                        <PathIcon Data="{StaticResource Icon.Broom}" Width="16" Height="16" />
                     </Button>
-                    <Button Classes="icon-btn"
-                        Classes.active="{Binding Source,
-                            Converter={StaticResource EnumToBool},
-                            ConverterParameter=Local}"
-                        Command="{Binding SetSourceCommand}"
-                        CommandParameter="Local"
-                        ToolTip.Tip="{Binding L[Search_LocalFiles]}" Width="36" Height="36">
-                        <PathIcon Data="{StaticResource Icon.DatabaseSearch}" Width="18" Height="18" />
-                    </Button>
-                    <Border Width="1" Height="20"
-                        Background="{DynamicResource BgHighlightBrush}"
-                        Margin="4,0" VerticalAlignment="Center"
-                        IsVisible="{Binding ShowForceSearchButton}" />
-                    <Button Classes="icon-btn"
+
+                    <!-- Кнопка обновления из сети при попадании в кэш -->
+                    <Button Classes="header-icon-btn"
                         Command="{Binding ForceSearchCommand}"
-                        IsVisible="{Binding ShowForceSearchButton}"
-                        ToolTip.Tip="{Binding L[Search_ForceRefresh]}" Width="36" Height="36">
+                        IsVisible="{Binding IsFromCache}"
+                        ToolTip.Tip="{Binding L[Search_FromCache_Tooltip], FallbackValue='Данные из кэша. Нажмите для обновления из сети'}"
+                        Margin="0,0,4,0"
+                        VerticalAlignment="Center">
                         <PathIcon Data="{StaticResource Icon.Refresh}"
-                            Width="18" Height="18"
-                            Foreground="{DynamicResource AccentBrush}" />
+                            Width="16" Height="16" />
                     </Button>
+
+                    <!-- РАЗДЕЛИТЕЛЬ ВО ВСЮ ВЫСОТУ ТОЛЩИНОЙ В 1PX -->
+                    <Border Width="1"
+                        VerticalAlignment="Stretch"
+                        Background="{DynamicResource BgHighlightBrush}"
+                        Margin="4,0,8,0" />
+
+                    <!-- ИСТОЧНИКИ КОНТЕНТА -->
+                    <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
+                        Margin="0,0,12,0">
+                        <Button Classes="header-icon-btn"
+                            Classes.active="{Binding IsSourceYtm}"
+                            Command="{Binding SetSourceCommand}"
+                            CommandParameter="YouTubeMusic"
+                            ToolTip.Tip="YouTube Music">
+                            <PathIcon Data="{StaticResource Icon.MusicCircle}" />
+                        </Button>
+
+                        <Button Classes="header-icon-btn"
+                            Classes.active="{Binding IsSourceYt}"
+                            Command="{Binding SetSourceCommand}"
+                            CommandParameter="YouTube"
+                            ToolTip.Tip="YouTube Video">
+                            <PathIcon Data="{StaticResource Icon.Youtube}" />
+                        </Button>
+
+                        <Button Classes="header-icon-btn"
+                            Classes.active="{Binding IsSourceLocal}"
+                            Command="{Binding SetSourceCommand}"
+                            CommandParameter="Local"
+                            ToolTip.Tip="Локальная библиотека">
+                            <PathIcon Data="{StaticResource Icon.DatabaseSearch}" />
+                        </Button>
+                    </StackPanel>
                 </StackPanel>
             </Grid>
+        </Border>
 
-            <StackPanel Orientation="Horizontal" Spacing="16"
-                IsVisible="{Binding IsOfflineMode}">
-                <!-- Offline mode indicator -->
-                <StackPanel Orientation="Horizontal" Spacing="6" Opacity="0.8">
-                    <PathIcon Data="{StaticResource Icon.WifiOff}"
-                        Width="14" Height="14"
-                        Foreground="{DynamicResource SystemWarnOrangeBrush}" />
-                    <TextBlock Text="{Binding L[Search_OfflineMode]}" FontSize="12"
-                        Foreground="{DynamicResource SystemWarnOrangeBrush}" />
+        <!-- ROW 1: НЕОНОВАЯ ЛИНИЯ ЗАГРУЗКИ ПО ЛИНИИ ШАПКИ -->
+        <ProgressBar Grid.Row="1"
+            Height="2"
+            IsIndeterminate="{Binding IsBusy}"
+            IsVisible="{Binding IsBusy}"
+            Foreground="{DynamicResource AccentBrush}"
+            Background="Transparent"
+            BorderThickness="0" />
+
+        <!-- ROW 2: ГОРИЗОНТАЛЬНАЯ ЛЕНТА ПОДСКАЗОК И ИСТОРИИ (CHIPS RIBBON) -->
+        <Border Grid.Row="2"
+            Classes="header-strip"
+            Height="38"
+            Padding="16,4">
+            <Panel VerticalAlignment="Center">
+
+                <!-- Плейсхолдер при отсутствии подсказок: предотвращает прыжки сетки -->
+                <TextBlock Text="{Binding RibbonPlaceholderText}"
+                    FontSize="12"
+                    Foreground="{DynamicResource TextMutedBrush}"
+                    VerticalAlignment="Center"
+                    IsVisible="{Binding !HasSuggestions}" />
+
+                <!-- ScrollViewer с адаптивной динамической маской краев -->
+                <ScrollViewer Name="RibbonScrollViewer"
+                    HorizontalScrollBarVisibility="Hidden"
+                    VerticalScrollBarVisibility="Disabled"
+                    IsVisible="{Binding HasSuggestions}">
+
+                    <ItemsControl ItemsSource="{Binding Suggestions}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="6" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:SearchSuggestionItem">
+                                <!-- Интерактивный чип: ЛКМ — выбор, ПКМ / ContextMenu — удаление -->
+                                <Border Classes="ribbon-chip"
+                                    PointerPressed="OnSuggestionPointerPressed"
+                                    ContextRequested="OnSuggestionContextRequested">
+                                    <TextBlock Text="{Binding Text}"
+                                        FontSize="12"
+                                        TextTrimming="CharacterEllipsis"
+                                        MaxLines="1"
+                                        Foreground="{DynamicResource TextPrimaryBrush}"
+                                        VerticalAlignment="Center" />
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Panel>
+        </Border>
+
+        <!-- ROW 3: СПИСОК ТРЕКОВ СО СКРОЛЛОМ У САМОГО КРАЯ ЭКРАНА -->
+        <Grid Grid.Row="3">
+
+            <!-- СКЕЛЕТОНЫ ПЕРВИЧНОЙ ЗАГРУЗКИ (12 ШТУК) -->
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+                IsVisible="{Binding IsLoading}">
+                <StackPanel Classes="breathing skeleton-list-container" Margin="24,12">
+                    <ContentControl Classes="track-skeleton-row" />
+                    <ContentControl Classes="track-skeleton-row" />
+                    <ContentControl Classes="track-skeleton-row" />
+                    <ContentControl Classes="track-skeleton-row" />
+                    <ContentControl Classes="track-skeleton-row" />
+                    <ContentControl Classes="track-skeleton-row" />
+                    <ContentControl Classes="track-skeleton-row" />
+                    <ContentControl Classes="track-skeleton-row" />
+                    <ContentControl Classes="track-skeleton-row" />
+                    <ContentControl Classes="track-skeleton-row" />
+                    <ContentControl Classes="track-skeleton-row" />
+                    <ContentControl Classes="track-skeleton-row" />
                 </StackPanel>
+            </ScrollViewer>
+
+            <!-- ОСНОВНОЙ СКРОЛЛЕР ТРЕКОВ (Скроллбар строго у правого края окна) -->
+            <ScrollViewer Name="ResultsScrollViewer"
+                HorizontalScrollBarVisibility="Disabled"
+                IsVisible="{Binding !IsLoading}">
+                <i:Interaction.Behaviors>
+                    <b:InfiniteScrollBehavior Command="{Binding LoadMoreCommand}" Threshold="300" />
+                </i:Interaction.Behaviors>
+
+                <controls:TrackListControl Items="{Binding Items}"
+                    FilterText="{Binding FilterQuery}"
+                    IsLoading="{Binding IsLoading}"
+                    IsLoadingMore="{Binding IsLoadingMore}"
+                    IsFetchingFromNetwork="{Binding IsFetchingFromNetwork}"
+                    ReachedEnd="{Binding ReachedEnd}"
+                    LoadMoreCommand="{Binding LoadMoreCommand}"
+                    UseSearchLoader="True"
+                    Margin="16,0,16,80" />
+            </ScrollViewer>
+
+            <!-- ПУСТОЙ РЕЗУЛЬТАТ -->
+            <StackPanel HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Spacing="12"
+                IsVisible="{Binding ShowEmptyState}">
+                <PathIcon Data="{StaticResource Icon.MagnifyClose}"
+                    Width="48" Height="48"
+                    Foreground="{DynamicResource TextMutedBrush}"
+                    Opacity="0.6" />
+                <TextBlock Text="{Binding ErrorMessage, FallbackValue='Ничего не найдено'}"
+                    FontSize="15"
+                    FontWeight="Medium"
+                    Foreground="{DynamicResource TextMutedBrush}"
+                    HorizontalAlignment="Center" />
             </StackPanel>
-
-            <!-- From cache indicator -->
-            <StackPanel Orientation="Horizontal" Spacing="6"
-                IsVisible="{Binding IsFromCache}" Opacity="0.6">
-                <PathIcon Data="{StaticResource Icon.DatabaseSearch}"
-                    Width="14" Height="14"
-                    Foreground="{DynamicResource TextMutedBrush}" />
-                <TextBlock Text="{Binding L[Search_FromCache]}" FontSize="12"
-                    Foreground="{DynamicResource TextMutedBrush}" />
-            </StackPanel>
-
-            <ItemsControl ItemsSource="{Binding RecentSearches}"
-                Margin="0,4,0,0" IsVisible="{Binding !IsOfflineMode}">
-                <ItemsControl.ItemsPanel>
-                    <ItemsPanelTemplate>
-                        <WrapPanel Orientation="Horizontal" />
-                    </ItemsPanelTemplate>
-                </ItemsControl.ItemsPanel>
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate x:DataType="vm:SearchHistoryItem">
-                        <Border Classes="search-chip" Margin="0,0,6,6">
-                            <Grid ColumnDefinitions="Auto, Auto">
-                                <Button Grid.Column="0" Classes="search-chip-text"
-                                    Content="{Binding Query}"
-                                    Command="{Binding Owner.HistoryClickCommand}"
-                                    CommandParameter="{Binding Query}" />
-                                <!-- Recent searches chip close button -->
-                                <Button Grid.Column="1" Classes="search-chip-close"
-                                    Command="{Binding Owner.RemoveHistoryCommand}"
-                                    CommandParameter="{Binding Query}"
-                                    ToolTip.Tip="{Binding Owner.L[Common_Remove]}">
-                                    <PathIcon Data="{StaticResource Icon.Close}" Width="12"
-                                        Height="12" />
-                                </Button>
-                            </Grid>
-                        </Border>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
-
-            <Border
-                IsVisible="{Binding ErrorMessage,
-                Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
-                Background="{DynamicResource SystemErrorBgBrush}" CornerRadius="8"
-                Padding="12" Margin="0,4,0,0">
-                <!-- Error banner -->
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <PathIcon Data="{StaticResource Icon.AlertCircle}"
-                        Width="18" Height="18"
-                        Foreground="{DynamicResource SystemErrorBrush}" />
-                    <TextBlock Text="{Binding ErrorMessage}"
-                        Foreground="{DynamicResource SystemErrorBrush}"
-                        VerticalAlignment="Center" FontSize="13" />
-                </StackPanel>
-            </Border>
-        </StackPanel>
-
-        <!-- RESULTS LIST -->
-        <ScrollViewer Grid.Row="1" Margin="24,0">
-            <i:Interaction.Behaviors>
-                <b:InfiniteScrollBehavior
-                    Command="{Binding LoadMoreCommand}"
-                    Threshold="300" />
-            </i:Interaction.Behaviors>
-
-            <controls:TrackListControl
-                Items="{Binding Items}"
-                FilterText="{Binding FilterQuery}"
-                IsLoading="{Binding IsLoading}"
-                IsLoadingMore="{Binding IsLoadingMore}"
-                IsFetchingFromNetwork="{Binding IsFetchingFromNetwork}"
-                ReachedEnd="{Binding ReachedEnd}"
-                LoadMoreCommand="{Binding LoadMoreCommand}"
-                UseSearchLoader="True" />
-        </ScrollViewer>
+        </Grid>
     </Grid>
 </UserControl>

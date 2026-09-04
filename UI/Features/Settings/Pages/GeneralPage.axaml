@@ -58,6 +58,22 @@
                                           StringFormat='{}{0} min'}" />
                 </Grid>
 
+                <!-- Максимальное количество подсказок поиска -->
+                <Grid ColumnDefinitions="*, 200, 70" Margin="0,8,0,0">
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Classes="label" Text="{Binding L[Settings_MaxSuggestions]}" />
+                        <TextBlock Classes="desc" Text="{Binding L[Settings_MaxSuggestionsDesc]}" />
+                    </StackPanel>
+                    <Slider Grid.Column="1"
+                        Minimum="3" Maximum="15"
+                        TickFrequency="1"
+                        IsSnapToTickEnabled="True"
+                        Value="{Binding MaxSuggestionsCount}"
+                        Margin="12,0" />
+                    <TextBlock Grid.Column="2" Classes="value-label"
+                        Text="{Binding MaxSuggestionsCount}" />
+                </Grid>
+
                 <Separator Background="{DynamicResource BgHighlightBrush}" Height="1" />
 
                 <!--  Reset  -->

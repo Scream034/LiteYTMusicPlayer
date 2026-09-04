@@ -21,6 +21,7 @@ using LMP.Core.Audio.Http;
 using LMP.Core.Audio.Interfaces;
 using LMP.Core.Audio.Cache;
 using LMP.Core.Youtube.Videos.ClosedCaptions;
+using System.Text.Json;
 
 namespace LMP.Core.Services;
 
@@ -1212,26 +1213,29 @@ public partial class YoutubeProvider : IDisposable
     #region Search Session Nested Type
 
     /// <summary>
-    /// Итеративная сессия постраничного поиска с авто-дедупликацией и защитой от утечек памяти.
+    /// Итеративная сессия постраничного поиска с авто-дедупликацией и неблокирующим освобождением.
+    /// Гарантирует отсутствие взаимных блокировок (deadlocks) в UI-потоке.
     /// </summary>
-    public sealed class SearchSession : IDisposable
+    public sealed class SearchSession : IAsyncDisposable, IDisposable
     {
         private readonly YoutubeClient _youtube;
         private readonly TrackRegistry _registry;
         private readonly string _query;
         private readonly int _maxResults;
         private readonly HashSet<string> _seenIds;
+        private readonly CancellationTokenSource _sessionCts = new();
+
         private IAsyncEnumerator<Batch<ISearchResult>>? _enumerator;
         private bool _hasMore = true;
-        private volatile bool _disposed;
+        private int _isDisposed;
+        private int _isFetching;
 
         private readonly Queue<TrackInfo> _buffer = new();
-        private readonly SemaphoreSlim _disposeLock = new(1, 1);
 
         /// <summary>
         /// Указывает, есть ли ещё результаты для загрузки.
         /// </summary>
-        public bool HasMore => (_hasMore || _buffer.Count > 0) && !_disposed && _seenIds.Count < _maxResults;
+        public bool HasMore => (_hasMore || _buffer.Count > 0) && _isDisposed == 0 && _seenIds.Count < _maxResults;
 
         /// <summary>
         /// Количество загруженных уникальных треков в текущей сессии.
@@ -1244,12 +1248,12 @@ public partial class YoutubeProvider : IDisposable
         public SearchFilter Filter { get; }
 
         internal SearchSession(
-           YoutubeClient youtube,
-           TrackRegistry registry,
-           string query,
-           int maxResults = 300,
-           SearchFilter filter = SearchFilter.Video,
-           IEnumerable<string>? skipTrackIds = null)
+            YoutubeClient youtube,
+            TrackRegistry registry,
+            string query,
+            int maxResults = 300,
+            SearchFilter filter = SearchFilter.Video,
+            IEnumerable<string>? skipTrackIds = null)
         {
             _youtube = youtube;
             _registry = registry;
@@ -1268,106 +1272,151 @@ public partial class YoutubeProvider : IDisposable
         }
 
         /// <summary>
-        /// Получает следующий пакет результатов поиска.
+        /// Получает следующий пакет результатов поиска с контролем сетевой квоты.
+        /// Гарантирует отдачу стабильного объема треков за минимальное число сетевых запросов.
         /// </summary>
-        /// <param name="count">Размер пакета.</param>
-        /// <param name="ct">Токен отмены операции.</param>
-        /// <returns>Список найденных треков.</returns>
-        public async Task<List<TrackInfo>> FetchNextBatchAsync(int count = 50, CancellationToken ct = default)
+        public async Task<List<TrackInfo>> FetchNextBatchAsync(int count = 25, CancellationToken ct = default)
         {
-            if (_disposed || _seenIds.Count >= _maxResults) return [];
+            if (_isDisposed != 0 || _seenIds.Count >= _maxResults || !HasMore)
+                return [];
 
-            var results = new List<TrackInfo>(count);
-
-            while (_buffer.Count > 0 && results.Count < count)
+            if (Interlocked.CompareExchange(ref _isFetching, 1, 0) != 0)
             {
-                results.Add(_buffer.Dequeue());
+                Log.Warn("[SearchSession] FetchNextBatchAsync rejected: another fetch is currently active.");
+                return [];
             }
 
-            while (results.Count < count && _hasMore && _seenIds.Count < _maxResults)
-            {
-                try
-                {
-                    _enumerator ??= _youtube.Search
-                        .GetResultBatchesAsync(_query, Filter, ct)
-                        .GetAsyncEnumerator(ct);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _sessionCts.Token);
+            var token = linkedCts.Token;
 
-                    if (!await _enumerator.MoveNextAsync())
+            try
+            {
+                if (_isDisposed != 0 || _seenIds.Count >= _maxResults)
+                    return [];
+
+                var results = new List<TrackInfo>(Math.Min(count, 32));
+
+                // 1. Отдаем остатки из буфера
+                while (_buffer.Count > 0 && results.Count < count)
+                {
+                    results.Add(_buffer.Dequeue());
+                }
+
+                if (results.Count >= count || !_hasMore)
+                    return results;
+
+                // 2. Сетевая подгрузка: не более 2 сетевых запросов на одну фазу скролла
+                int networkCalls = 0;
+                const int maxNetworkCalls = 2;
+
+                while (results.Count < count && _hasMore && _seenIds.Count < _maxResults && networkCalls < maxNetworkCalls)
+                {
+                    networkCalls++;
+
+                    _enumerator ??= _youtube.Search
+                        .GetResultBatchesAsync(_query, Filter, token)
+                        .GetAsyncEnumerator(token);
+
+                    if (!await _enumerator.MoveNextAsync().ConfigureAwait(false))
                     {
                         _hasMore = false;
                         break;
                     }
 
                     var batch = _enumerator.Current;
-
                     for (int i = 0; i < batch.Items.Count; i++)
                     {
-                        if (_seenIds.Count >= _maxResults) break;
-
-                        if (batch.Items[i] is TrackInfo tInfo)
+                        if (_seenIds.Count >= _maxResults)
                         {
-                            var rawId = tInfo.GetRawId();
-
-                            if (!_seenIds.Add(rawId)) continue;
-
-                            var track = _registry.RegisterOrUpdate(tInfo);
-
-                            if (results.Count < count)
-                                results.Add(track);
-                            else
-                                _buffer.Enqueue(track);
+                            _hasMore = false;
+                            break;
                         }
+
+                        if (batch.Items[i] is not TrackInfo tInfo)
+                            continue;
+
+                        var rawId = tInfo.GetRawId();
+                        if (!_seenIds.Add(rawId))
+                            continue;
+
+                        var canonicalTrack = _registry.RegisterOrUpdate(tInfo);
+
+                        if (results.Count < count)
+                            results.Add(canonicalTrack);
+                        else
+                            _buffer.Enqueue(canonicalTrack);
                     }
                 }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    Log.Error($"[SearchSession] Error: {ex.Message}");
-                    _hasMore = false;
-                    break;
-                }
+
+                return results;
             }
-
-            return results;
-        }
-
-        /// <summary>
-        /// Освобождает ресурсы, используемые сессией поиска.
-        /// </summary>
-        public void Dispose()
-        {
-            if (_disposed) return;
-
-            _disposeLock.Wait();
-            try
+            catch (OperationCanceledException) { return []; }
+            catch (Exception ex)
             {
-                if (_disposed) return;
-                _disposed = true;
+                Log.Error($"[SearchSession] Iteration failed: {ex.Message}");
                 _hasMore = false;
-                _buffer.Clear();
-                _seenIds.Clear();
-
-                if (_enumerator != null)
-                {
-                    try { _enumerator.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
-                    catch (Exception ex) { Log.Warn($"[SearchSession] Dispose error: {ex.Message}"); }
-                    _enumerator = null;
-                }
+                return [];
             }
             finally
             {
-                _disposeLock.Release();
-                _disposeLock.Dispose();
+                Interlocked.Exchange(ref _isFetching, 0);
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+                return;
+
+            _hasMore = false;
+            _sessionCts.Cancel();
+
+            _buffer.Clear();
+            _seenIds.Clear();
+
+            if (_enumerator != null)
+            {
+                try { await _enumerator.DisposeAsync().ConfigureAwait(false); }
+                catch (NotSupportedException) { /* Игнорируем: энумератор InnerTube не требует явного Dispose */ }
+                catch (Exception ex) { Log.Warn($"[SearchSession] Async dispose warning: {ex.Message}"); }
+                _enumerator = null;
             }
 
+            _sessionCts.Dispose();
+            GC.SuppressFinalize(this);
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+                return;
+
+            _hasMore = false;
+            _sessionCts.Cancel();
+
+            _buffer.Clear();
+            _seenIds.Clear();
+
+            var enumerator = _enumerator;
+            _enumerator = null;
+
+            if (enumerator != null)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try { await enumerator.DisposeAsync().ConfigureAwait(false); }
+                    catch (NotSupportedException) { /* Игнорируем */ }
+                    catch (Exception ex) { Log.Warn($"[SearchSession] Background dispose warning: {ex.Message}"); }
+                });
+            }
+
+            _sessionCts.Dispose();
             GC.SuppressFinalize(this);
         }
     }
 
     private SearchSession? _currentSearchSession;
+    private readonly ConcurrentDictionary<string, (DateTime ExpireAt, List<string> Items)> _suggestionsCache = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Создаёт новую сессию итеративного поиска.
@@ -1389,7 +1438,7 @@ public partial class YoutubeProvider : IDisposable
     /// </summary>
     public async Task<(List<TrackInfo> Tracks, SearchSession Session)> SearchWithSessionAsync(
         string query,
-        int initialCount = 50,
+        int initialCount = 25,
         int maxResults = 300,
         SearchFilter filter = SearchFilter.MusicSong,
         CancellationToken ct = default)
@@ -1399,12 +1448,102 @@ public partial class YoutubeProvider : IDisposable
 
         var sw = Stopwatch.StartNew();
         var session = CreateSearchSession(query, maxResults, filter);
-        var tracks = await session.FetchNextBatchAsync(initialCount, ct);
+        var tracks = await session.FetchNextBatchAsync(initialCount, ct).ConfigureAwait(false);
 
         sw.Stop();
         Log.Info($"[YouTube] Initial '{query}': {tracks.Count} in {sw.ElapsedMilliseconds}ms (Filter: {filter})");
 
         return (tracks, session);
+    }
+
+    /// <summary>
+    /// Получает поисковые подсказки от Google/YouTube Suggest API с fallback-доменами и локальным кэшированием.
+    /// Предотвращает зависания UI-потока при блокировках сетевых узлов ТСПУ/DPI.
+    /// </summary>
+    /// <param name="query">Поисковый запрос.</param>
+    /// <param name="ct">Токен отмены вызывающей стороны.</param>
+    /// <returns>Список текстовых подсказок (до 10 элементов).</returns>
+    public async Task<List<string>> GetSearchSuggestionsAsync(string query, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return [];
+
+        var normalizedQuery = query.Trim();
+
+        // Проверяем локальный RAM-кэш подсказок (TTL 5 минут) для исключения повторных запросов при Backspace
+        if (_suggestionsCache.TryGetValue(normalizedQuery, out var cached) && cached.ExpireAt > DateTime.UtcNow)
+        {
+            return cached.Items;
+        }
+
+        // Ограничиваем таймаут подсказок 2.5 секундами — автодополнение не должно подвешивать ввод
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(2500));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+        var token = linkedCts.Token;
+
+        var client = _currentHttpClient ?? SharedHttpClient.Instance;
+        var encoded = Uri.EscapeDataString(normalizedQuery);
+
+        // Zero-alloc fallback: генерируем строку по требованию без аллокации промежуточного массива и без ReadOnlySpan через await
+        for (int i = 0; i < 2; i++)
+        {
+            var endpoint = i == 0
+                ? $"https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&q={encoded}&hl=ru"
+                : $"https://suggestqueries-clients6.youtube.com/complete/search?client=firefox&ds=yt&q={encoded}&hl=ru";
+
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+                request.Headers.UserAgent.ParseAdd(YoutubeClientUtils.UaWeb);
+
+                using var response = await client.SendAsync(
+                    request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+
+                if (!response.IsSuccessStatusCode)
+                    continue;
+
+                await using var stream = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
+                using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: token).ConfigureAwait(false);
+
+                if (doc.RootElement.ValueKind != JsonValueKind.Array || doc.RootElement.GetArrayLength() < 2)
+                    continue;
+
+                var arr = doc.RootElement[1];
+                if (arr.ValueKind != JsonValueKind.Array)
+                    continue;
+
+                int maxSuggestions = _libraryService?.Settings.MaxSuggestionsCount ?? 8;
+                int length = arr.GetArrayLength();
+                var result = new List<string>(Math.Min(length, maxSuggestions));
+
+                foreach (var item in arr.EnumerateArray())
+                {
+                    var text = item.GetString();
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        result.Add(text);
+                        if (result.Count >= maxSuggestions)
+                            break;
+                    }
+                }
+
+                if (_suggestionsCache.Count > 100)
+                    _suggestionsCache.Clear();
+
+                _suggestionsCache[normalizedQuery] = (DateTime.UtcNow.AddMinutes(5), result);
+                return result;
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                Log.Debug($"[YouTube] Suggestion timeout for '{normalizedQuery}' on endpoint #{i}");
+            }
+            catch (Exception ex)
+            {
+                Log.Debug($"[YouTube] Suggestion endpoint #{i} failed: {ex.Message}");
+            }
+        }
+
+        return [];
     }
 
     #endregion

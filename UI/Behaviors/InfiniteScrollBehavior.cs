@@ -1,26 +1,24 @@
-﻿using Avalonia;
+﻿using System.Windows.Input;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Avalonia.Xaml.Interactivity;
-using System.Windows.Input;
 
 namespace LMP.UI.Behaviors;
 
 /// <summary>
-/// Behavior для автоматической подгрузки с защитой от "мёртвой зоны".
-/// Поддерживает размещение на ScrollViewer напрямую или на дочернем элементе
-/// (например ItemsRepeater внутри ScrollViewer).
+/// Поведение автоматической постраничной подгрузки списка при приближении к границе скролла.
+/// Исключает race conditions и паразитные циклы за счёт синхронизации с состоянием команд и фазами отрисовки.
 /// </summary>
 public sealed class InfiniteScrollBehavior : Behavior<Control>
 {
     private IDisposable? _offsetSubscription;
     private IDisposable? _extentSubscription;
     private ScrollViewer? _scrollViewer;
-    private DispatcherTimer? _retryTimer;
+    private ICommand? _observedCommand;
 
-    private volatile bool _isExecuting;
-    private volatile bool _needsRetry;
+    private bool _isExecuting;
 
     #region Styled Properties
 
@@ -28,7 +26,7 @@ public sealed class InfiniteScrollBehavior : Behavior<Control>
         AvaloniaProperty.Register<InfiniteScrollBehavior, ICommand?>(nameof(Command));
 
     public static readonly StyledProperty<double> ThresholdProperty =
-        AvaloniaProperty.Register<InfiniteScrollBehavior, double>(nameof(Threshold), 200);
+        AvaloniaProperty.Register<InfiniteScrollBehavior, double>(nameof(Threshold), 250.0);
 
     public ICommand? Command
     {
@@ -57,21 +55,24 @@ public sealed class InfiniteScrollBehavior : Behavior<Control>
             AssociatedObject?.Loaded += OnAssociatedObjectLoaded;
         }
 
-        _retryTimer = new DispatcherTimer(DispatcherPriority.Background)
+        HookCommandCanExecute(Command);
+    }
+
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+    {
+        base.OnPropertyChanged(change);
+
+        if (change.Property == CommandProperty)
         {
-            Interval = TimeSpan.FromMilliseconds(200)
-        };
-        _retryTimer.Tick += OnRetryTimerTick;
+            HookCommandCanExecute(change.GetNewValue<ICommand?>());
+        }
     }
 
     private void OnAssociatedObjectLoaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         if (AssociatedObject == null) return;
-
         AssociatedObject.Loaded -= OnAssociatedObjectLoaded;
 
-        // Ищем ScrollViewer: сначала среди потомков, затем среди предков.
-        // Предок нужен для случая ItemsRepeater внутри ScrollViewer.
         var scroll = AssociatedObject.FindDescendantOfType<ScrollViewer>()
                   ?? AssociatedObject.FindAncestorOfType<ScrollViewer>();
 
@@ -84,7 +85,7 @@ public sealed class InfiniteScrollBehavior : Behavior<Control>
         _scrollViewer = sv;
 
         _offsetSubscription = sv.GetObservable(ScrollViewer.OffsetProperty)
-            .Subscribe(OnOffsetChanged);
+            .Subscribe(_ => CheckAndTrigger());
 
         _extentSubscription = sv.GetObservable(ScrollViewer.ExtentProperty)
             .Subscribe(_ => CheckAndTrigger());
@@ -92,7 +93,7 @@ public sealed class InfiniteScrollBehavior : Behavior<Control>
 
     protected override void OnDetaching()
     {
-        base.OnDetaching();
+        UnhookCommandCanExecute();
 
         _offsetSubscription?.Dispose();
         _offsetSubscription = null;
@@ -100,26 +101,29 @@ public sealed class InfiniteScrollBehavior : Behavior<Control>
         _extentSubscription?.Dispose();
         _extentSubscription = null;
 
-        _retryTimer?.Stop();
-        _retryTimer = null;
-
         _scrollViewer = null;
+
+        base.OnDetaching();
     }
 
-    private void OnOffsetChanged(Vector offset)
+    private void HookCommandCanExecute(ICommand? newCommand)
     {
-        CheckAndTrigger();
+        UnhookCommandCanExecute();
+        _observedCommand = newCommand;
+
+        _observedCommand?.CanExecuteChanged += OnCommandCanExecuteChanged;
     }
 
-    private void OnRetryTimerTick(object? sender, EventArgs e)
+    private void UnhookCommandCanExecute()
     {
-        if (!_needsRetry || _isExecuting)
-        {
-            _retryTimer?.Stop();
-            return;
-        }
+        _observedCommand?.CanExecuteChanged -= OnCommandCanExecuteChanged;
+        _observedCommand = null;
+    }
 
-        CheckAndTrigger();
+    private void OnCommandCanExecuteChanged(object? sender, EventArgs e)
+    {
+        // Проверяем скролл только после того, как Avalonia завершит фазу Layout для новых элементов
+        Dispatcher.UIThread.Post(CheckAndTrigger, DispatcherPriority.Loaded);
     }
 
     private void CheckAndTrigger()
@@ -134,55 +138,33 @@ public sealed class InfiniteScrollBehavior : Behavior<Control>
 
         double scrollableHeight = sv.Extent.Height - sv.Viewport.Height;
 
+        // Если элементы физически не заполнили даже один экран — скролла нет
         if (scrollableHeight <= 0)
-        {
-            if (Command.CanExecute(null))
-                ExecuteWithRetry();
             return;
-        }
 
         double distanceToEnd = scrollableHeight - sv.Offset.Y;
 
-        bool nearEnd = distanceToEnd <= Threshold;
-        bool atEnd = distanceToEnd <= 1;
-
-        if ((nearEnd || atEnd) && Command.CanExecute(null))
-            ExecuteWithRetry();
+        if (distanceToEnd <= Threshold)
+        {
+            if (Command.CanExecute(null))
+            {
+                ExecuteCommand();
+            }
+        }
     }
 
-    private async void ExecuteWithRetry()
+    private void ExecuteCommand()
     {
-        if (_isExecuting) return;
-
         _isExecuting = true;
-        _needsRetry = false;
-        _retryTimer?.Stop();
 
         try
         {
             Command?.Execute(null);
-
-            await Task.Delay(100);
-
-            if (_scrollViewer != null && Command?.CanExecute(null) == true)
-            {
-                double scrollableHeight = _scrollViewer.Extent.Height - _scrollViewer.Viewport.Height;
-                double distanceToEnd = scrollableHeight - _scrollViewer.Offset.Y;
-
-                if (distanceToEnd <= Threshold || scrollableHeight <= 0)
-                {
-                    _needsRetry = true;
-                    _retryTimer?.Start();
-                }
-            }
         }
         finally
         {
-            await Task.Delay(50);
-            _isExecuting = false;
-
-            if (_needsRetry)
-                CheckAndTrigger();
+            // Сбрасываем флаг только на следующем тике, давая ReactiveCommand обновить IsExecuting
+            Dispatcher.UIThread.Post(() => _isExecuting = false, DispatcherPriority.Normal);
         }
     }
 }
